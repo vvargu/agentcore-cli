@@ -65,6 +65,7 @@ function harness(
     stream?: StreamBehavior;
     awsDirectory?: string;
     processEnv?: NodeJS.ProcessEnv;
+    runArgs?: string[];
   } = {},
 ) {
   const calls: ProcessCall[] = [];
@@ -93,6 +94,7 @@ function harness(
         AWS_ACCESS_KEY_ID: "test-access-key",
         AWS_SECRET_ACCESS_KEY: "test-secret-key",
       },
+      runArgs: config.runArgs,
     }),
   };
 }
@@ -278,6 +280,21 @@ describe("ContainerDevRunner", () => {
     await collect(runner.run(input(root, projectRuntime)));
 
     expect(await readFile(dockerignore, "utf8")).toBe("# user owned\ncustom-pattern\n");
+  });
+
+  test("adds extra run flags before the image", async () => {
+    const projectRuntime = runtime();
+    const root = await projectRoot(projectRuntime);
+    const { calls, runner } = harness({ runArgs: ["--cap-add", "SYS_ADMIN"] });
+
+    await collect(runner.run(input(root, projectRuntime)));
+
+    const command = commandCall(calls, "run").command;
+    expect(command.slice(command.indexOf("--cap-add"), command.indexOf("--cap-add") + 2)).toEqual([
+      "--cap-add",
+      "SYS_ADMIN",
+    ]);
+    expect(command.indexOf("--cap-add")).toBeLessThan(command.indexOf(imageTag(root)));
   });
 
   test("scopes image and container names to the project root", async () => {

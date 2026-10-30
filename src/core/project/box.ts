@@ -11,7 +11,8 @@ import type { ScaffoldRuntimeInput } from "../../handlers/project/types";
 export const BOX_DIRECTORY = "box";
 
 /** Lines appended to the project's .gitignore: the venv boxy runs the agent with. */
-export const BOX_GITIGNORE = "\n# Box (boxy): the agent's Python environment\nbox/.venv/\n";
+export const BOX_GITIGNORE =
+  "\n# Box (boxy): the agent's Python environment and the box image's build context\nbox/.venv/\n.box-build/\n";
 
 /**
  * Whether a scaffolded runtime gets a box folder: a Python Strands agent served

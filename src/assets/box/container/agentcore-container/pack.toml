@@ -1,0 +1,24 @@
+# What the agent needs in agentcore's container image, besides the project's own packs. agentcore
+# writes this pack into the container profile's packs/ folder and lists it after the project's packs.
+# A pack holds no [options]: the container profile sets python.venv and python.runtime itself.
+
+[pack]
+name = "agentcore-container"
+version = 1
+
+# Box listens on 0.0.0.0:8080 in the container (the port `agentcore dev` publishes and AgentCore
+# Runtime calls) and relays each connection to the agent's own port 8080 in its sandbox. The agent
+# (BedrockAgentCoreApp.run()) binds 8080. A profile may change a key, such as `ingress.port`.
+[agent.ingress]
+host = "0.0.0.0"
+port = 8080
+
+# Debian's shared libraries (libssl, libffi, ...), which the image's Python modules load. On Linux a
+# read grant does not let Python load a .so, so the folder is exec as well.
+[agent.filesystem]
+read = ["/usr/lib/aarch64-linux-gnu"]
+exec = ["/usr/lib/aarch64-linux-gnu"]
+
+# The agent asks no metadata service for credentials; boxy's policy blocks IMDS anyway.
+[agent.env]
+AWS_EC2_METADATA_DISABLED = "true"
