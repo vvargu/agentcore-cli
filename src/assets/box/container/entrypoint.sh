@@ -47,6 +47,60 @@ else
   echo "entrypoint: no instance metadata endpoint; using whatever AWS profile is mounted"
 fi
 
+# --- Step 2b: the runtime's settings for the agent ------------------------------------------------
+# The agent sees only [agent.env], not the container's environment. Pass on the variables that name
+# the project's Gateways and Memories (AGENTCORE_GATEWAY_<NAME>_URL/_ARN/_AUTH_TYPE,
+# MEMORY_<NAME>_ID/_ARN, and the imported GATEWAY_<ID>_* forms) in the pack agentcore-runtime,
+# which the container profile lists. This is an allowlist of exact name shapes, not a prefix match:
+# the container's environment also holds secrets (AGENTCORE_CREDENTIAL_<NAME> from .env.local in
+# `agentcore dev`, the env:// secrets boxy reads), and none of them may reach the agent. A value
+# must be printable ASCII without spaces (a URL, an ARN, an id), so it is a safe TOML string.
+python3 - /app/.box/profile/packs/agentcore-runtime/pack.toml <<'PY'
+import json, os, re, sys
+NAME = re.compile(r"(AGENTCORE_GATEWAY|AGENTCORE_MEMORY|GATEWAY|MEMORY)_[A-Z0-9_]+_(URL|ARN|ID|AUTH_TYPE)")
+VALUE = re.compile(r"[\x21-\x7e]*")
+names = sorted(k for k, v in os.environ.items() if NAME.fullmatch(k) and VALUE.fullmatch(v))
+lines = ['[pack]', 'name = "agentcore-runtime"', 'version = 1', '', '[agent.env]']
+lines += ["%s = %s" % (k, json.dumps(os.environ[k])) for k in names]
+os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
+with open(sys.argv[1], "w") as f:
+    f.write("\n".join(lines) + "\n")
+print("entrypoint: passed to the agent: %s" % (", ".join(names) or "nothing"))
+PY
+
+# --- Step 2c: relay policy denials to the log ---------------------------------------------------------
+# boxy writes the run's records to ~/.boxy/runs/<run>/records.jsonl in the container. Print each deny
+# as `[box] DENY <action> <resource> (rule <id>)`, so the runtime's CloudWatch log shows it.
+python3 -u - <<'PY' &
+import glob, json, os, time
+started = time.time()
+path = None
+while path is None:
+    found = [p for p in glob.glob("/home/box/.boxy/runs/*/records.jsonl") if os.path.getmtime(p) >= started]
+    path = max(found, key=os.path.getmtime) if found else None
+    time.sleep(0.5)
+with open(path, encoding="utf-8") as records:
+    while True:
+        line = records.readline()
+        if not line:
+            time.sleep(0.5)
+            continue
+        try:
+            request = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(request, dict):
+            continue
+        for rl in request.get("resourceLogs", []):
+            for sl in rl.get("scopeLogs", []):
+                for record in sl.get("logRecords", []):
+                    a = {x["key"]: next(iter(x["value"].values()), "") for x in record.get("attributes", []) if x.get("value")}
+                    if a.get("strands.box.policy.verdict") == "deny":
+                        rule = a.get("strands.box.policy.rule") or a.get("strands.box.policy.cause", "")
+                        print("[box] DENY %s %s (rule %s)" % (a.get("strands.box.policy.action", "?"),
+                              a.get("strands.box.policy.resource", "?"), rule), flush=True)
+PY
+
 # --- Step 3: start boxy -----------------------------------------------------------------------------
 # Box needs no root, so drop to uid 1000 first; the agent then maps to uid 1000 outside its sandbox,
 # not to 0. boxy compiles /app/.box/profile (the container profile), and Box starts its trusted half

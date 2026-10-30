@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { isBoxProject, stageBoxContainer } from "../box/container";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import semver from "semver";
@@ -1507,12 +1508,18 @@ export class FsProjectManager implements ProjectManager {
   ): Promise<SyncRuntimeBuildsResult> {
     // A v0 project's agentcore.json has the v0 shape and is never rewritten here.
     if (project.legacy) return { project, messages: [], written: false };
+    const boxMessages: string[] = [];
+    const before = project;
+    if (isBoxProject(project.rootPath)) {
+      project = await this.stageBoxRuntimes(project, input, boxMessages);
+    }
     const runtimes = input.runtimeNames
       ? project.spec.runtimes.filter((runtime) => input.runtimeNames!.includes(runtime.name))
       : project.spec.runtimes;
     const prepared = prepareRuntimes(project.rootPath, runtimes, input.purpose);
+    prepared.messages.unshift(...boxMessages);
     if (prepared.changed.length === 0) {
-      return { project, messages: prepared.messages, written: false };
+      return { project, messages: prepared.messages, written: project !== before };
     }
 
     // Patch the raw file rather than re-serializing the parsed spec, so fields
@@ -1543,6 +1550,60 @@ export class FsProjectManager implements ProjectManager {
       messages: prepared.messages,
       written: true,
     };
+  }
+
+  /**
+   * A box project (box/profile.toml) runs each runtime in the box image: stage its build context
+   * (.box-build/<runtime>, with the AWS routes for deploy) and make agentcore.json say so, a
+   * Container build from that context. POC: the edit stays in agentcore.json.
+   */
+  private async stageBoxRuntimes(
+    project: Project,
+    input: SyncRuntimeBuildsInput,
+    messages: string[],
+  ): Promise<Project> {
+    // Only deploy needs the AWS routes, so only deploy reads the targets.
+    const region =
+      input.purpose === "deploy"
+        ? (input.region ?? (await this.listTargets(project))[0]?.region ?? process.env.AWS_REGION)
+        : undefined;
+    const target = region ? { kind: "aws" as const, region } : { kind: "local" as const };
+    if (input.purpose === "deploy" && !region) {
+      messages.push(
+        "box project: no deploy region (no target in aws-targets.json, no AWS_REGION), so the box " +
+          "image has the local profile; `agentcore deploy` stages it again for its target",
+      );
+    }
+    const specPath = this.getProjectSpecPath(project);
+    const raw = await this.json.read(specPath, z.record(z.string(), z.unknown()));
+    const rawRuntimes = Array.isArray(raw.runtimes) ? [...(raw.runtimes as unknown[])] : [];
+    let edited = false;
+    for (const runtime of project.spec.runtimes) {
+      if (input.runtimeNames && !input.runtimeNames.includes(runtime.name)) continue;
+      const context = await stageBoxContainer({ projectRoot: project.rootPath, runtime, target });
+      messages.push(`runtime "${runtime.name}": box image staged in ${context}/ (${target.kind})`);
+      const index = rawRuntimes.findIndex(
+        (entry) => (entry as { name?: unknown } | null)?.name === runtime.name,
+      );
+      if (index < 0) continue;
+      const entry = { ...(rawRuntimes[index] as Record<string, unknown>) };
+      if (entry.build === "Container" && entry.buildContextPath === context) continue;
+      entry.build = "Container";
+      entry.buildContextPath = context;
+      entry.dockerfile = "Dockerfile";
+      delete entry.runtimeVersion;
+      rawRuntimes[index] = entry;
+      edited = true;
+      messages.push(`runtime "${runtime.name}": build Container from ${context}/ (box project)`);
+    }
+    if (!edited) return project;
+    const updated = { ...raw, runtimes: rawRuntimes };
+    const parsed = ProjectSpecSchema.safeParse(updated);
+    if (!parsed.success) {
+      throw new ProjectStateError(z.prettifyError(parsed.error), { cause: parsed.error });
+    }
+    await this.json.write(specPath, updated);
+    return { ...project, spec: parsed.data };
   }
 
   // Resolves the named target from aws-targets.json before handing off, so the
@@ -1597,7 +1658,10 @@ export class FsProjectManager implements ProjectManager {
 
     // Synth reads agentcore.json, so it is brought up to date with the code
     // first; only once the target is known, so a bad --target rewrites nothing.
-    const synced = await this.syncRuntimeBuilds(project, { purpose: "deploy" });
+    const synced = await this.syncRuntimeBuilds(project, {
+      purpose: "deploy",
+      region: target.region,
+    });
     for (const message of synced.messages) yield { type: "step", message };
     project = synced.project;
 
