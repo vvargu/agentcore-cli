@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { InvalidEnvironmentError } from "../../errors";
 import { boxProfileToml, BOX_POLICY_DW } from "../project/box";
 import {
+  BOXY_BINARIES,
   awsRoutes,
   boxSecretNames,
   containerProfile,
@@ -32,15 +33,22 @@ function temp(): string {
   return dir;
 }
 
-function gitRepo(file: string, contents: string): string {
-  const dir = temp();
-  writeFileSync(join(dir, file), contents);
-  const git = (...args: string[]) =>
-    execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...args]);
-  git("init", "-q");
-  git("add", ".");
-  git("commit", "-qm", "init");
-  return dir;
+/** The first 20 bytes of an ELF program for a machine (183 is aarch64, 62 is x86-64). */
+function elf(machine: number): Buffer {
+  const header = Buffer.alloc(20);
+  Buffer.from([0x7f, 0x45, 0x4c, 0x46]).copy(header);
+  header.writeUInt16LE(machine, 18);
+  return header;
+}
+
+/** AGENTCORE_BOXY_BIN and AGENTCORE_BOXY_SOURCE for a fake Linux arm64 boxy. */
+function boxyEnv(machine = 183): NodeJS.ProcessEnv {
+  const bin = temp();
+  for (const name of BOXY_BINARIES) writeFileSync(join(bin, name), elf(machine));
+  const source = temp();
+  mkdirSync(join(source, "resources", "shared", "python"), { recursive: true });
+  writeFileSync(join(source, "resources", "shared", "python", "pack.toml"), "[pack]\n");
+  return { AGENTCORE_BOXY_BIN: bin, AGENTCORE_BOXY_SOURCE: source };
 }
 
 function boxProject(profile = boxProfileToml("us-west-2")): string {
@@ -106,10 +114,7 @@ describe("boxSecretNames", () => {
 describe("stageBoxContainer", () => {
   test("writes the build context for the box image", async () => {
     const root = boxProject();
-    const env = {
-      AGENTCORE_BOXY_SOURCE: gitRepo("Cargo.toml", "[workspace]\n"),
-      AGENTCORE_BOX_SOURCE: gitRepo("README.md", "box\n"),
-    };
+    const env = boxyEnv();
     expect(isBoxProject(root)).toBe(true);
 
     const context = await stageBoxContainer({
@@ -124,8 +129,14 @@ describe("stageBoxContainer", () => {
     expect(dockerfile).toContain("WORKDIR /app/app/agent\n");
     expect(dockerfile).not.toContain("{{codeLocation}}");
     expect(statSync(join(dir, "entrypoint.sh")).mode & 0o111).not.toBe(0);
-    expect(existsSync(join(dir, ".box-src", "boxy.tar"))).toBe(true);
-    expect(existsSync(join(dir, ".box-src", "box.tar"))).toBe(true);
+    for (const name of BOXY_BINARIES) {
+      expect(existsSync(join(dir, ".box-src", "boxy", name))).toBe(true);
+    }
+    expect(
+      existsSync(join(dir, ".box-src", "boxy", "resources", "shared", "python", "pack.toml")),
+    ).toBe(true);
+    expect(dockerfile).toContain("COPY .box-src/boxy/ /opt/boxy/");
+    expect(dockerfile).not.toContain("cargo build");
     expect(existsSync(join(dir, "project", "app", "agent", "main.py"))).toBe(true);
     expect(existsSync(join(dir, "project", "app", "agent", ".venv"))).toBe(false);
     expect(existsSync(join(dir, "project", "app", "agent", ".env"))).toBe(false);
@@ -140,10 +151,7 @@ describe("stageBoxContainer", () => {
 
   test("adds the AWS routes to the deployed profile", async () => {
     const root = boxProject();
-    const env = {
-      AGENTCORE_BOXY_SOURCE: gitRepo("Cargo.toml", "[workspace]\n"),
-      AGENTCORE_BOX_SOURCE: gitRepo("README.md", "box\n"),
-    };
+    const env = boxyEnv();
     const local = await stageBoxContainer({
       projectRoot: root,
       runtime: { name: "agent", codeLocation: "app/agent" },
@@ -173,7 +181,17 @@ describe("stageBoxContainer", () => {
     ).toContain('name = "agentcore-runtime"');
   });
 
-  test("asks for the boxy source when it is not set", async () => {
+  test("refuses boxy binaries that are not built for Linux arm64", async () => {
+    await expect(
+      stageBoxContainer({
+        projectRoot: boxProject(),
+        runtime: { name: "agent", codeLocation: "app/agent" },
+        env: boxyEnv(62),
+      }),
+    ).rejects.toThrow("is not a Linux arm64 program");
+  });
+
+  test("asks for the boxy binaries when they are not set", async () => {
     const root = boxProject();
     await expect(
       stageBoxContainer({

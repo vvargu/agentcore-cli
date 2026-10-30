@@ -2,14 +2,14 @@
 // stageBoxContainer writes the image's build context to `.box-build/<runtime>/`:
 //
 //   Dockerfile, entrypoint.sh   from src/assets/box/container
-//   .box-src/boxy.tar           `git archive HEAD` of boxy ($AGENTCORE_BOXY_SOURCE)
-//   .box-src/box.tar            `git archive HEAD` of Box Core ($AGENTCORE_BOX_SOURCE)
+//   .box-src/boxy/              boxy and its two helpers, prebuilt for Linux arm64
+//                               ($AGENTCORE_BOXY_BIN), and boxy's resources/ (packs) from
+//                               $AGENTCORE_BOXY_SOURCE
 //   project/<codeLocation>/     the agent's code, without host venvs or .env files
 //   box-container/              the container profile: box/profile.toml with container paths and
 //                               the agentcore-container pack, box/policy.dw, and box/packs/*
 //
-// POC: boxy and Box Core build from source in the image until released binaries ship.
-import { execFileSync } from "node:child_process";
+// POC: the binaries come from a local Linux build until released boxy binaries ship.
 import {
   cpSync,
   existsSync,
@@ -84,15 +84,14 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
     },
   );
 
-  // boxy and Box Core sources.
-  archive(
-    sourceFolder(env, "AGENTCORE_BOXY_SOURCE", "boxy"),
-    join(context, ".box-src", "boxy.tar"),
-  );
-  archive(
-    sourceFolder(env, "AGENTCORE_BOX_SOURCE", "Box Core"),
-    join(context, ".box-src", "box.tar"),
-  );
+  // boxy, its helpers, and its packs, which Box Core and boxy find beside the running boxy.
+  const boxy = join(context, ".box-src", "boxy");
+  mkdirSync(boxy, { recursive: true });
+  const bin = binaryFolder(env);
+  for (const name of BOXY_BINARIES) {
+    cpSync(join(bin, name), join(boxy, name));
+  }
+  cpSync(join(resourcesFolder(env), "resources"), join(boxy, "resources"), { recursive: true });
 
   // The agent's code.
   cpSync(join(input.projectRoot, codeLocation), join(context, "project", codeLocation), {
@@ -221,16 +220,51 @@ secret.ref = "aws://box-runtime"
 `;
 }
 
-function sourceFolder(env: NodeJS.ProcessEnv, key: string, what: string): string {
-  const folder = env[key];
-  if (!folder || !existsSync(join(folder, ".git"))) {
+/** The programs the image needs: boxy and the two helpers Box Core runs from beside it. */
+export const BOXY_BINARIES = [
+  "boxy",
+  "strands-box-sock-alias",
+  "strands-box-contain-trampoline",
+] as const;
+/** ELF machine number for aarch64, the architecture AgentCore Runtime runs. */
+const EM_AARCH64 = 183;
+
+/** $AGENTCORE_BOXY_BIN: a folder with each of {@link BOXY_BINARIES} built for Linux arm64. */
+function binaryFolder(env: NodeJS.ProcessEnv): string {
+  const folder = env.AGENTCORE_BOXY_BIN;
+  if (!folder) {
     throw new InvalidEnvironmentError(
-      `Set ${key} to a git checkout of ${what}; the box image builds it from source.`,
+      "Set AGENTCORE_BOXY_BIN to the folder with boxy, strands-box-sock-alias, and " +
+        "strands-box-contain-trampoline built for Linux arm64 (target-linux/release).",
     );
+  }
+  for (const name of BOXY_BINARIES) {
+    const path = join(folder, name);
+    let header: Buffer;
+    try {
+      header = readFileSync(path).subarray(0, 20);
+    } catch {
+      throw new InvalidEnvironmentError(`AGENTCORE_BOXY_BIN has no ${name} (${path}).`);
+    }
+    // ELF magic, then e_machine (little-endian) at byte 18.
+    const elf = header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+    if (!elf || header.readUInt16LE(18) !== EM_AARCH64) {
+      throw new InvalidEnvironmentError(
+        `${path} is not a Linux arm64 program; build it for linux/arm64.`,
+      );
+    }
   }
   return folder;
 }
 
-function archive(folder: string, output: string): void {
-  execFileSync("git", ["-C", folder, "archive", "--format=tar", "-o", output, "HEAD"]);
+/** $AGENTCORE_BOXY_SOURCE: the boxy checkout whose resources/ holds the packs. */
+function resourcesFolder(env: NodeJS.ProcessEnv): string {
+  const folder = env.AGENTCORE_BOXY_SOURCE;
+  if (!folder || !existsSync(join(folder, "resources"))) {
+    throw new InvalidEnvironmentError(
+      "Set AGENTCORE_BOXY_SOURCE to the boxy checkout; the image takes boxy's packs from its " +
+        "resources/ folder.",
+    );
+  }
+  return folder;
 }
