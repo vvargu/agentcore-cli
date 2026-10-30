@@ -30,6 +30,12 @@ type CreateProjectInputBase = {
   skipInstall?: boolean;
   /** Skip initializing a git repository. */
   skipGit?: boolean;
+  /**
+   * Write `box/profile.toml` and `box/policy.dw` beside `app/` so boxy can run the
+   * agent, and make boxy's venv (`box/.venv`). Applies only to a runtime that
+   * `boxSupported` accepts; the region is the Bedrock region the profile names.
+   */
+  box?: { region: string };
 };
 
 /** Set of arguments needed to scaffold a managed code-based evaluator. */

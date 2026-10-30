@@ -10,6 +10,7 @@ import { getRuntimeTemplateResolver } from "./runtime";
 import { mergeSpecEntries } from "./spec";
 import type { Template, TemplateRenderer } from "./types";
 import type { EnvLocalEntry } from "../../../handlers/project/types";
+import { BOX_DIRECTORY, BOX_GITIGNORE, BOX_POLICY_DW, boxProfileToml } from "../box";
 
 type CreateProjectConfig = {
   assetSource: AssetSource;
@@ -19,7 +20,12 @@ type CreateProjectConfig = {
 export async function createProjectTree(
   config: CreateProjectConfig,
   input: { projectName: string },
-  options?: { runtime?: ScaffoldRuntimeInput; importBedrockAgent?: ImportBedrockAgentInput },
+  options?: {
+    runtime?: ScaffoldRuntimeInput;
+    importBedrockAgent?: ImportBedrockAgentInput;
+    /** Write box/profile.toml and box/policy.dw for boxy. */
+    box?: { region: string };
+  },
 ): Promise<{ tree: FsTreeNode; envEntries: EnvLocalEntry[] }> {
   const templates: Template[] = [];
   if (options?.runtime) {
@@ -38,10 +44,21 @@ export async function createProjectTree(
 
   const envEntries = templates.flatMap((template) => template.envEntries ?? []);
 
+  const box = options?.box;
   const tree = FsTreeNode.createDirectory(".", [
-    FsTreeNode.createFile(".gitignore", () =>
-      config.assetSource.read("templates/shared/gitignore.template"),
-    ),
+    FsTreeNode.createFile(".gitignore", async () => {
+      const gitignore = await config.assetSource.read("templates/shared/gitignore.template");
+      return box ? `${gitignore}${BOX_GITIGNORE}` : gitignore;
+    }),
+    // boxy's profile and the user's policy rules, beside app/ (see ../box.ts).
+    ...(box
+      ? [
+          FsTreeNode.createDirectory(BOX_DIRECTORY, [
+            FsTreeNode.createFile("profile.toml", async () => boxProfileToml(box.region)),
+            FsTreeNode.createFile("policy.dw", async () => BOX_POLICY_DW),
+          ]),
+        ]
+      : []),
     FsTreeNode.createDirectory("agentcore", [
       await FsTreeNode.fromAssetSource({ assetSource: config.assetSource }, { assetDir: "cdk" }),
       FsTreeNode.createFile("agentcore.json", async () =>

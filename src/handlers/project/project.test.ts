@@ -380,6 +380,79 @@ describe("project create", () => {
     expect(await Bun.file(join(runtimeRoot, ".dockerignore")).exists()).toBe(false);
   });
 
+  test("writes box/profile.toml and box/policy.dw beside app/ for a Python Strands template", async () => {
+    const { path: directory, cleanup } = await inTempDirectory();
+    cleanups.push(cleanup);
+    const { io } = await run([
+      "create",
+      "--name",
+      "MyProject",
+      "--template",
+      "agent-python-strands",
+      "--skip-install",
+      "--skip-git",
+      "--region",
+      "us-west-2",
+    ]);
+
+    const projectRoot = join(directory, "MyProject");
+    const profile = await readFile(join(projectRoot, "box", "profile.toml"), "utf-8");
+    expect(profile).toContain('packs = ["boxy/python", "boxy/bedrock"]');
+    expect(profile).toContain('[options]\nbedrock.region = "us-west-2"');
+    expect(profile).toContain('# secret.ref = "env://EXAMPLE_API_KEY"');
+    expect(profile).toContain('# command = ["/usr/bin/curl"]');
+    // The packs' default command fits main.py's app.run(); ingress comes from later layers.
+    expect(profile).not.toMatch(/^\[agent/m);
+    const policy = await readFile(join(projectRoot, "box", "policy.dw"), "utf-8");
+    expect(policy).toContain('// @id("spawn_curl") permit');
+    // boxy adds the IMDS rules itself and refuses a duplicate id.
+    expect(policy).not.toContain("metadata_");
+    expect(policy.split("\n").every((line) => line === "" || line.startsWith("//"))).toBe(true);
+    expect(await readFile(join(projectRoot, ".gitignore"), "utf-8")).toContain("\nbox/.venv/\n");
+    expect(io.stderr()).toContain(
+      "next steps:\n  cd MyProject\n  cd app/agent && boxy profile show --full ../../box\n" +
+        "  boxy run ../../box\n  agentcore dev",
+    );
+  });
+
+  test("--no-box writes no box folder", async () => {
+    const { path: directory, cleanup } = await inTempDirectory();
+    cleanups.push(cleanup);
+    const { io } = await run([
+      "create",
+      "--name",
+      "MyProject",
+      "--template",
+      "agent-python-strands",
+      "--no-box",
+      "--skip-install",
+      "--skip-git",
+    ]);
+
+    const projectRoot = join(directory, "MyProject");
+    expect(existsSync(join(projectRoot, "box"))).toBe(false);
+    expect(await readFile(join(projectRoot, ".gitignore"), "utf-8")).not.toContain("box/");
+    expect(io.stderr()).toMatch(/next steps:\n  cd MyProject\n  agentcore dev$/);
+  });
+
+  test.each(["agent-python-langchain", "a2a-python-strands", "agent-typescript-strands"])(
+    "writes no box folder for the %s template",
+    async (template) => {
+      const { path: directory, cleanup } = await inTempDirectory();
+      cleanups.push(cleanup);
+      await run([
+        "create",
+        "--name",
+        "MyProject",
+        "--template",
+        template,
+        "--skip-install",
+        "--skip-git",
+      ]);
+      expect(existsSync(join(directory, "MyProject", "box"))).toBe(false);
+    },
+  );
+
   test("generates uv.lock for a Container scaffold even with --skip-install", async () => {
     const { path: directory, cleanup } = await inTempDirectory();
     cleanups.push(cleanup);

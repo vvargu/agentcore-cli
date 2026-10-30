@@ -33,6 +33,7 @@ import { chinaModelProviderRestriction } from "../../../core/project/manager";
 import { isChinaRegion } from "../../../core/partition";
 import { harnessApiKeyCredentialName } from "../../../core/project/templates/harness";
 import { toLiteLlmGatewayModel } from "../../harness/liteLlmGateway";
+import { boxNextSteps, boxSupported } from "../../../core/project/box";
 
 type CreateProjectHandlerConfig = {
   projectManager: ProjectManager;
@@ -56,6 +57,25 @@ export const DEFAULT_CREATE_RUNTIME_NAME = "agent";
  */
 export function createNextStep(scaffoldsRuntime: boolean): string {
   return scaffoldsRuntime ? "agentcore dev" : "agentcore deploy";
+}
+
+/**
+ * Adds the box folder to a runtime create input when `region` is given (the box
+ * is on) and the template fits boxy's shipped packs; returns the input unchanged
+ * otherwise. Shared by the flag path and the wizard.
+ */
+export function withBox(input: CreateProjectInput, region: string | undefined): CreateProjectInput {
+  return region !== undefined && boxSupported(input.scaffoldRuntimeInput)
+    ? { ...input, box: { region } }
+    : input;
+}
+
+/** The next steps after creating a non-empty project, shared by the flag path and the wizard. */
+export function createNextSteps(name: string, input: CreateProjectInput): string[] {
+  if (input.box !== undefined && input.scaffoldRuntimeInput !== undefined) {
+    return [`cd ${name}`, ...boxNextSteps(input.scaffoldRuntimeInput.runtimeName)];
+  }
+  return [`cd ${name}`, createNextStep(input.scaffoldRuntimeInput !== undefined)];
 }
 
 /**
@@ -115,6 +135,11 @@ export const createCreateProjectHandler = (config: CreateProjectHandlerConfig) =
         z.boolean().default(false),
       ),
       flag("skip-git", "skip initializing a git repository", z.boolean().default(false)),
+      flag(
+        "box",
+        "skip writing box/profile.toml and box/policy.dw for boxy (Python Strands templates with Bedrock)",
+        z.boolean().default(true),
+      ),
     ],
     handle: async (ctx, flags) => {
       const name = flags["name"];
@@ -131,17 +156,20 @@ export const createCreateProjectHandler = (config: CreateProjectHandlerConfig) =
         skipGit: flags["skip-git"],
       };
 
+      const region = ctx.require(RegionKey);
       const createInput: CreateProjectInput =
         template === EMPTY_TEMPLATE_NAME
           ? base
-          : {
-              ...base,
-              scaffoldRuntimeInput: resolveRuntimeTemplateShortcut(template, {
-                runtimeName: DEFAULT_CREATE_RUNTIME_NAME,
-              }),
-            };
+          : withBox(
+              {
+                ...base,
+                scaffoldRuntimeInput: resolveRuntimeTemplateShortcut(template, {
+                  runtimeName: DEFAULT_CREATE_RUNTIME_NAME,
+                }),
+              },
+              flags["box"] ? region : undefined,
+            );
 
-      const region = ctx.require(RegionKey);
       try {
         validateCreateRegionSupport(createInput, region);
       } catch (error) {
@@ -182,7 +210,9 @@ export const createCreateProjectHandler = (config: CreateProjectHandlerConfig) =
           }
           config.io.stderr.write(`created project '${name}' in ./${name}\n`);
           config.io.stderr.write(
-            `next steps:\n  cd ${name}\n  ${createNextStep(createInput.scaffoldRuntimeInput !== undefined)}\n`,
+            `next steps:\n${createNextSteps(name, createInput)
+              .map((step) => `  ${step}\n`)
+              .join("")}`,
           );
         },
       );

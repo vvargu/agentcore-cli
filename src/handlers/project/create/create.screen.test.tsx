@@ -540,13 +540,15 @@ describe("project create wizard", () => {
     expect(r.lastFrame()).toContain(STRANDS_BEDROCK_MODEL_ID);
     await r.press("return");
     await waitForText(r.lastFrame, "✔ project created in ./StrandsApp", 5000);
-    // A runtime project can run locally first, so the next step is dev.
+    // A runtime project can run locally first, so the next step is dev; a box
+    // project can also run in boxy.
     expect(r.lastFrame()).toContain("cd StrandsApp");
+    expect(r.lastFrame()).toContain("boxy run ../../box");
     expect(r.lastFrame()).toContain("agentcore dev");
     expect(r.lastFrame()).not.toContain("agentcore deploy");
 
     // Identical to the flag-driven `--template agent-python-strands` input:
-    // the default model id is not sent as an override.
+    // the default model id is not sent as an override, and the box is on.
     expect(inputs).toEqual([
       {
         name: "StrandsApp",
@@ -555,6 +557,7 @@ describe("project create wizard", () => {
         scaffoldRuntimeInput: resolveRuntimeTemplateShortcut("agent-python-strands", {
           runtimeName: "agent",
         }),
+        box: { region: "us-east-1" },
       },
     ]);
     expect(inputs[0]!.scaffoldRuntimeInput!.modelId).toBeUndefined();

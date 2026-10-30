@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { writeMigrationState } from "./migrate/journal";
 import { join, relative } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import semver from "semver";
 import {
   DeserializationError,
@@ -451,6 +451,67 @@ describe("FsProjectManager.create", () => {
       },
       { command: ["uv", "sync"], cwd: join(projectRoot, "app", "agent_python_minimal") },
       { command: ["git", "init"], cwd: projectRoot },
+    ]);
+  });
+
+  test("a box create makes boxy's venv in box/.venv with a uv-managed Python", async () => {
+    const directory = await inTempDirectory();
+    const commands: { command: string[]; cwd: string; env?: NodeJS.ProcessEnv }[] = [];
+    const subject = new FsProjectManager({
+      logger: createSilentLogger(),
+      identity: new TestIdentityClient(),
+      enableTransactionSearch: async () => {},
+      runner: async (command, { cwd, env }) => {
+        commands.push({ command, cwd, env });
+      },
+      checkTool: async () => {},
+    });
+    await runCreate(subject, {
+      name: "example",
+      scaffoldRuntimeInput: AGENT_PYTHON_STRANDS,
+      box: { region: "us-east-1" },
+    });
+
+    const projectRoot = join(directory, "example");
+    const appDir = join(projectRoot, "app", "agent_python_strands");
+    expect(commands.map(({ command, cwd }) => ({ command, cwd }))).toEqual([
+      {
+        command: ["npm", "install", "--loglevel=http"],
+        cwd: join(projectRoot, "agentcore", "cdk"),
+      },
+      { command: ["uv", "sync"], cwd: appDir },
+      { command: ["uv", "sync", "--managed-python"], cwd: appDir },
+      { command: ["git", "init"], cwd: projectRoot },
+    ]);
+    const boxSync = commands[2]!;
+    expect(boxSync.env).toMatchObject({
+      UV_PROJECT_ENVIRONMENT: join(projectRoot, "box", ".venv"),
+      UV_PYTHON_INSTALL_DIR: join(realpathSync(homedir()), ".local", "share", "uv", "python"),
+    });
+    // The rest of the environment (PATH and the like) is kept.
+    expect(boxSync.env?.["PATH"]).toBe(process.env["PATH"]);
+    expect(commands[1]!.env).toBeUndefined();
+    expect(await readFile(join(projectRoot, "box", "profile.toml"), "utf-8")).toContain(
+      'bedrock.region = "us-east-1"',
+    );
+    expect(existsSync(join(projectRoot, "box", "policy.dw"))).toBe(true);
+  });
+
+  test("a box is written only for the templates boxy's packs fit", async () => {
+    const directory = await inTempDirectory();
+    const { manager: subject, commands } = manager();
+    await runCreate(subject, {
+      name: "example",
+      scaffoldRuntimeInput: AGENT_PYTHON,
+      box: { region: "us-east-1" },
+      skipGit: true,
+    });
+
+    expect(existsSync(join(directory, "example", "box"))).toBe(false);
+    expect(commands.map(({ command }) => command)).not.toContainEqual([
+      "uv",
+      "sync",
+      "--managed-python",
     ]);
   });
 

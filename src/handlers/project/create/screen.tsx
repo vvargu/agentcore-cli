@@ -16,11 +16,13 @@ import {
 } from "../shortcuts";
 import {
   createNextStep,
+  createNextSteps,
   DEFAULT_CREATE_RUNTIME_NAME,
   EMPTY_PROJECT_SUMMARY,
   emptyProjectCreatedMessage,
   emptyProjectNextSteps,
   resolveScaffoldHarnessInput,
+  withBox,
 } from "./index";
 import { isChinaRegion } from "../../../core/partition";
 import {
@@ -120,6 +122,7 @@ const TEMPLATE_CHOICES: Choice<TemplateName>[] = PROJECT_TEMPLATE_NAMES.map((tem
 export function buildCreateInput(
   values: CreateProjectFormValues,
   apiKey?: string,
+  boxRegion?: string,
 ): CreateProjectInput {
   if (values.kind === "harness") {
     const model = toHarnessModelInput(values.model);
@@ -144,20 +147,25 @@ export function buildCreateInput(
   const model = templateTakesModelProvider(values.template)
     ? toRuntimeModelOverrides(values.runtimeModel)
     : undefined;
-  return {
-    name: values.name,
-    skipInstall: false,
-    skipGit: false,
-    scaffoldRuntimeInput: resolveRuntimeTemplateShortcut(values.template, {
-      runtimeName: DEFAULT_CREATE_RUNTIME_NAME,
-      ...(model && {
-        modelProvider: model.modelProvider,
-        modelId: model.modelId,
-        apiKey,
-        apiBase: model.apiBase,
+  // The wizard writes the box folder whenever the template fits, as the flag path
+  // does without --no-box.
+  return withBox(
+    {
+      name: values.name,
+      skipInstall: false,
+      skipGit: false,
+      scaffoldRuntimeInput: resolveRuntimeTemplateShortcut(values.template, {
+        runtimeName: DEFAULT_CREATE_RUNTIME_NAME,
+        ...(model && {
+          modelProvider: model.modelProvider,
+          modelId: model.modelId,
+          apiKey,
+          apiBase: model.apiBase,
+        }),
       }),
-    }),
-  };
+    },
+    boxRegion,
+  );
 }
 
 // summaryOf renders the review table: what will be created, and where.
@@ -197,6 +205,9 @@ export function ProjectCreateScreen({ ctx, core }: ScreenProps) {
     emptyCreateProjectForm(region),
   );
 
+  // The submitted input, for the next steps (a box project gets boxy's).
+  const [created, setCreated] = useState<CreateProjectInput | undefined>(undefined);
+
   const patch = (update: Partial<CreateProjectFormValues>) =>
     setValues((current) => ({ ...current, ...update }));
   const isEmptyProject = values.kind === "agent" && values.template === EMPTY_TEMPLATE_NAME;
@@ -221,8 +232,9 @@ export function ProjectCreateScreen({ ctx, core }: ScreenProps) {
             : templateTakesModelProvider(values.template)
               ? await resolveRuntimeModelApiKey(toRuntimeModelOverrides(values.runtimeModel))
               : undefined;
-        const input = buildCreateInput(values, apiKey);
         const resolvedRegion = ctx.require(RegionKey);
+        const input = buildCreateInput(values, apiKey, resolvedRegion);
+        setCreated(input);
         validateCreateRegionSupport(input, resolvedRegion);
         const stripped = stripCreateRegionUnavailableDefaults(input, resolvedRegion);
         if (stripped !== undefined) yield { type: "step" as const, message: stripped };
@@ -237,7 +249,9 @@ export function ProjectCreateScreen({ ctx, core }: ScreenProps) {
       successNextSteps={
         isEmptyProject
           ? emptyProjectNextSteps(values.name, china)
-          : [`cd ${values.name}`, createNextStep(values.kind === "agent")]
+          : created !== undefined
+            ? createNextSteps(values.name, created)
+            : [`cd ${values.name}`, createNextStep(values.kind === "agent")]
       }
       successHint="enter exits"
       onDone={() => {

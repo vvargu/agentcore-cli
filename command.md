@@ -246,6 +246,7 @@ create a new project
 - `--template <template>`: the template to scaffold the Runtime from (default: "empty")
 - `--skip-install`: skip installing dependencies (npm install, uv sync) (default: false)
 - `--skip-git`: skip initializing a git repository (default: false)
+- `--no-box`: skip writing box/profile.toml and box/policy.dw for boxy (Python Strands templates with Bedrock)
 
 ### `agentcore add`
 

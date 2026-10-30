@@ -51,6 +51,7 @@ import {
   validateHarnessTemplateSource,
 } from "./templates/harness";
 import { createProjectTree } from "./templates/project";
+import { BOX_UV_SYNC, boxSupported, boxVenvEnv } from "./box";
 import { getRuntimeTemplateResolver } from "./templates/runtime";
 import {
   DEFAULT_EXPORT_SYSTEM_PROMPT,
@@ -503,11 +504,13 @@ export class FsProjectManager implements ProjectManager {
 
     const scaffoldRuntimeInput = input.scaffoldRuntimeInput;
     const destination = join(process.cwd(), input.name);
+    // A box folder only for the runtimes boxy's shipped packs fit; others are unchanged.
+    const box = input.box && boxSupported(scaffoldRuntimeInput) ? input.box : undefined;
 
     const { tree: projectTree, envEntries } = await createProjectTree(
       { templateRenderer: this.templateRenderer, assetSource: this.assetSource },
       { projectName: input.name },
-      { runtime: scaffoldRuntimeInput, importBedrockAgent: input.importBedrockAgent },
+      { runtime: scaffoldRuntimeInput, importBedrockAgent: input.importBedrockAgent, box },
     );
 
     // Validate required tools exist before starting creation flow
@@ -547,6 +550,15 @@ export class FsProjectManager implements ProjectManager {
       if (scaffoldRuntimeInput) {
         const appDir = join(destination, "app", scaffoldRuntimeInput.runtimeName);
         yield* this.installRuntimeDependencies(appDir, scaffoldRuntimeInput);
+        if (box && existsSync(join(appDir, "pyproject.toml"))) {
+          // boxy runs no program from the workspace (app/<agent>), so its venv is
+          // box/.venv, with a uv-managed Python that the boxy/python pack grants.
+          yield { type: "step", message: "making the box's Python environment with uv" };
+          yield* this.run(BOX_UV_SYNC, appDir, undefined, {
+            ...process.env,
+            ...boxVenvEnv(destination),
+          });
+        }
       }
     } else if (
       scaffoldRuntimeInput?.build === "Container" &&
@@ -1931,6 +1943,7 @@ export class FsProjectManager implements ProjectManager {
     command: string[],
     cwd: string,
     formatLine: (line: string) => string | undefined = (line) => line,
+    env?: NodeJS.ProcessEnv,
   ): AsyncGenerator<ProjectEvent, void, unknown> {
     yield* withOutputEvents((emit) => {
       const lines = createLineSplitter((line) => {
@@ -1939,6 +1952,7 @@ export class FsProjectManager implements ProjectManager {
       });
       return this.runner(command, {
         cwd,
+        ...(env !== undefined && { env }),
         onOutput: (chunk) => {
           this.logger.debug(chunk);
           lines.push(chunk);
