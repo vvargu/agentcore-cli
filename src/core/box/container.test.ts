@@ -67,7 +67,7 @@ describe("containerProfile", () => {
       'packs = ["boxy/python", "a", "b"]',
     );
     expect(out).toMatch(
-      /\[options\]\n# Set by agentcore[^\n]*\npython\.venv = "\/opt\/agent-venv"\npython\.runtime = "\/usr\/local"/,
+      /\[options\]\n# Set by agentcore[^\n]*\npython\.venv = "\/opt\/agent-venv"\npython\.runtime = "\/usr\/local\/lib"/,
     );
     expect(out).toContain('bedrock.region = "us-west-2"');
   });

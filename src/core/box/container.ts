@@ -32,7 +32,8 @@ const RUNTIME_PACK = "agentcore-runtime";
 /** The image's Python (python:3.12-slim) and the venv the Dockerfile makes with uv. */
 const CONTAINER_OPTIONS = {
   "python.venv": "/opt/agent-venv",
-  "python.runtime": "/usr/local",
+  // Box refuses /usr/local as a whole (a system root); the pack grants /usr/local/bin.
+  "python.runtime": "/usr/local/lib",
 };
 const SKIPPED = new Set([
   ".venv",
