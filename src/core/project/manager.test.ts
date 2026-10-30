@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { writeMigrationState } from "./migrate/journal";
-import { join, relative, resolve } from "node:path";
+import { join, relative } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import semver from "semver";
 import {
@@ -3165,10 +3165,17 @@ describe("docs-only runtimes", () => {
     await writeFile(join(appDir, "pyproject.toml"), '[project]\nname = "search"\n');
     await mkdir(join(project.rootPath, "box"), { recursive: true });
     await writeFile(join(project.rootPath, "box", "profile.toml"), 'packs = ["boxy/python"]\n');
-    // Any git checkout serves as the boxy and Box Core sources here: this repository.
-    const source = resolve(import.meta.dir, "../../..");
-    const saved = [process.env.AGENTCORE_BOXY_SOURCE, process.env.AGENTCORE_BOX_SOURCE];
-    process.env.AGENTCORE_BOXY_SOURCE = process.env.AGENTCORE_BOX_SOURCE = source;
+    // A fake Linux arm64 boxy: ELF headers with e_machine 183, and a resources/ folder.
+    const bin = join(project.rootPath, "fake-boxy-bin");
+    await mkdir(join(bin, "resources"), { recursive: true });
+    const header = Buffer.alloc(20);
+    Buffer.from([0x7f, 0x45, 0x4c, 0x46]).copy(header);
+    header.writeUInt16LE(183, 18);
+    for (const name of ["boxy", "strands-box-sock-alias", "strands-box-contain-trampoline"]) {
+      await writeFile(join(bin, name), header);
+    }
+    const saved = [process.env.AGENTCORE_BOXY_BIN, process.env.AGENTCORE_BOXY_SOURCE];
+    process.env.AGENTCORE_BOXY_BIN = process.env.AGENTCORE_BOXY_SOURCE = bin;
     try {
       const resolved = (await subject.resolve({ filePath: appDir }))!;
       const result = await subject.syncRuntimeBuilds(resolved, {
@@ -3196,10 +3203,10 @@ describe("docs-only runtimes", () => {
       expect(profile).toContain('secret.ref = "aws://box-runtime"');
       expect(profile).toContain('"*.gateway.bedrock-agentcore.us-west-2.amazonaws.com"');
     } finally {
-      process.env.AGENTCORE_BOXY_SOURCE = saved[0];
-      process.env.AGENTCORE_BOX_SOURCE = saved[1];
-      if (saved[0] === undefined) delete process.env.AGENTCORE_BOXY_SOURCE;
-      if (saved[1] === undefined) delete process.env.AGENTCORE_BOX_SOURCE;
+      process.env.AGENTCORE_BOXY_BIN = saved[0];
+      process.env.AGENTCORE_BOXY_SOURCE = saved[1];
+      if (saved[0] === undefined) delete process.env.AGENTCORE_BOXY_BIN;
+      if (saved[1] === undefined) delete process.env.AGENTCORE_BOXY_SOURCE;
     }
   });
 

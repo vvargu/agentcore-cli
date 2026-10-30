@@ -3,8 +3,8 @@
 # do not edit it here, it is written again on each run.
 #
 # The staged build context holds:
-#   .box-src/boxy.tar      `git archive HEAD` of boxy (AGENTCORE_BOXY_SOURCE)
-#   .box-src/box.tar       `git archive HEAD` of Box Core (AGENTCORE_BOX_SOURCE)
+#   .box-src/boxy/         boxy and its helpers, prebuilt for Linux arm64 (AGENTCORE_BOXY_BIN),
+#                          and boxy's resources/ (AGENTCORE_BOXY_SOURCE)
 #   project/               the agent's code and the user's box/, without host venvs
 #   box-container/         the container profile: the user's profile.toml with container settings,
 #                          the user's policy.dw, and the agentcore-container pack
@@ -12,26 +12,7 @@
 #
 # The same image runs locally (`agentcore dev`) and on AgentCore Runtime, which runs linux/arm64.
 
-# --- Stage 1: boxy and Box Core for Linux arm64, from source ---------------------------------------
-# TODO(box-poc): copy released boxy binaries instead once they ship.
-FROM --platform=linux/arm64 public.ecr.aws/docker/library/rust:1-bookworm AS boxy-build
-ADD .box-src/box.tar /build/box/
-ADD .box-src/boxy.tar /build/boxy/
-WORKDIR /build/boxy
-# boxy's Cargo.toml links Box Core through a [patch] with an absolute path on the developer's
-# machine. Point it at the Box Core source in this image.
-RUN sed -i -E 's#path = "/[^"]*/(crates/[^"]*)"#path = "/build/box/\1"#' Cargo.toml \
-    && grep -n 'path = "/build/box/' Cargo.toml
-# No cache mounts: CodeBuild's `docker build` may run without BuildKit.
-RUN CARGO_TARGET_DIR=/build/target cargo build --release --locked \
-       -p strands-box-cli -p strands-box -p strands-box-containment \
-       --bin boxy --bin strands-box-sock-alias --bin strands-box-contain-trampoline \
-    && mkdir -p /out \
-    && cp /build/target/release/boxy /build/target/release/strands-box-sock-alias \
-       /build/target/release/strands-box-contain-trampoline /out/ \
-    && cp -R resources /out/resources
-
-# --- Stage 2: the agent's image --------------------------------------------------------------------
+# TODO(box-poc): use released boxy binaries once they ship.
 FROM --platform=linux/arm64 public.ecr.aws/docker/library/python:3.12-slim-bookworm
 
 # curl reads the execution role from instance metadata in entrypoint.sh; setpriv and umount are in
@@ -57,7 +38,8 @@ RUN if [ -f uv.lock ]; then uv sync --frozen --no-dev --no-install-project; \
 
 # boxy, its two helper programs, and its resources (packs) sit in one folder: Box Core finds the
 # helpers beside the running boxy, and boxy finds resources/ beside itself.
-COPY --from=boxy-build /out/ /opt/boxy/
+COPY .box-src/boxy/ /opt/boxy/
+RUN chmod 0755 /opt/boxy/boxy /opt/boxy/strands-box-sock-alias /opt/boxy/strands-box-contain-trampoline
 
 # The project: the agent's code (the workspace, which the agent may write) and the container
 # profile in /app/.box/profile, outside the workspace.
