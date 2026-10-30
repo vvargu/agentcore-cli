@@ -3,7 +3,8 @@
 import type { DevEvent, DevRunner, DevServerInput } from "../../handlers/project/dev/types";
 import { rewriteOtelEndpointForContainer } from "../dev/otel/collector";
 import { ContainerDevRunner } from "../dev/container";
-import { boxSecretNames, isBoxProject, stageBoxContainer } from "./container";
+import { join } from "node:path";
+import { BOX_BUILD_DIRECTORY, boxSecretNames, isBoxProject, stageBoxContainer } from "./container";
 
 /** Box Core makes user namespaces and mounts a fresh /proc for the agent's sandbox. */
 export const BOX_RUN_ARGS = [
@@ -42,8 +43,12 @@ export class BoxDevRunner implements DevRunner {
       yield* this.fallback.run(input);
       return;
     }
-    yield { type: "status", message: "Box project: staging the box image" };
-    const context = await this.stage({ projectRoot: input.projectRoot, runtime: input.runtime });
+    // syncRuntimeBuilds staged .box-build/<runtime> already; stage again when it is missing.
+    let context = join(BOX_BUILD_DIRECTORY, input.runtime.name);
+    if (input.runtime.buildContextPath !== context) {
+      yield { type: "status", message: "Box project: staging the box image" };
+      context = await this.stage({ projectRoot: input.projectRoot, runtime: input.runtime });
+    }
 
     // Each env:// secret goes to the container, where boxy reads it; the agent never sees it.
     const env: Record<string, string> = rewriteOtelEndpointForContainer({ ...input.env });

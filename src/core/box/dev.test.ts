@@ -63,6 +63,29 @@ describe("BoxDevRunner", () => {
     expect(container.inputs).toHaveLength(0);
   });
 
+  test("does not stage again when syncRuntimeBuilds already did", async () => {
+    const container = new Recorder();
+    let staged = 0;
+    const runner = new BoxDevRunner({
+      fallback: new Recorder(),
+      container,
+      stage: async () => {
+        staged += 1;
+        return ".box-build/agent";
+      },
+      processEnv: {},
+    });
+    const synced = input(project(true));
+    synced.runtime = {
+      ...synced.runtime,
+      build: "Container",
+      buildContextPath: ".box-build/agent",
+    } as ProjectRuntime;
+    await collect(runner.run(synced));
+    expect(staged).toBe(0);
+    expect(container.inputs[0]!.runtime.buildContextPath as string).toBe(".box-build/agent");
+  });
+
   test("runs the staged box image with the profile's secrets", async () => {
     const container = new Recorder();
     const runner = new BoxDevRunner({
@@ -80,6 +103,7 @@ describe("BoxDevRunner", () => {
     const ran = container.inputs[0]!;
     expect(ran.runtime.build).toBe("Container");
     expect(ran.runtime.buildContextPath as string).toBe(".box-build/agent");
+    expect(events[0]).toEqual({ type: "status", message: "Box project: staging the box image" });
     expect(ran.env).toEqual({
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://host.docker.internal:4318",
       OTHER: "1",

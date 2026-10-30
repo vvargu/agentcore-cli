@@ -14,7 +14,7 @@
 
 # --- Stage 1: boxy and Box Core for Linux arm64, from source ---------------------------------------
 # TODO(box-poc): copy released boxy binaries instead once they ship.
-FROM --platform=linux/arm64 public.ecr.aws/docker/library/rust:1.98-bookworm AS boxy-build
+FROM --platform=linux/arm64 public.ecr.aws/docker/library/rust:1-bookworm AS boxy-build
 ADD .box-src/box.tar /build/box/
 ADD .box-src/boxy.tar /build/boxy/
 WORKDIR /build/boxy
@@ -22,10 +22,8 @@ WORKDIR /build/boxy
 # machine. Point it at the Box Core source in this image.
 RUN sed -i -E 's#path = "/[^"]*/(crates/[^"]*)"#path = "/build/box/\1"#' Cargo.toml \
     && grep -n 'path = "/build/box/' Cargo.toml
-# The cargo registry and target folders are build caches, so a rebuild with the same sources is fast.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/target \
-    CARGO_TARGET_DIR=/build/target cargo build --release --locked \
+# No cache mounts: CodeBuild's `docker build` may run without BuildKit.
+RUN CARGO_TARGET_DIR=/build/target cargo build --release --locked \
        -p strands-box-cli -p strands-box -p strands-box-containment \
        --bin boxy --bin strands-box-sock-alias --bin strands-box-contain-trampoline \
     && mkdir -p /out \

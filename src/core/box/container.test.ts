@@ -13,7 +13,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InvalidEnvironmentError } from "../../errors";
 import { boxProfileToml, BOX_POLICY_DW } from "../project/box";
-import { boxSecretNames, containerProfile, isBoxProject, stageBoxContainer } from "./container";
+import {
+  awsRoutes,
+  boxSecretNames,
+  containerProfile,
+  isBoxProject,
+  stageBoxContainer,
+} from "./container";
 
 const temps: string[] = [];
 afterEach(() => {
@@ -57,6 +63,9 @@ describe("containerProfile", () => {
   test("adds the container pack and the image's Python paths to [options]", () => {
     const out = containerProfile(boxProfileToml("us-west-2"));
     expect(out).toContain('packs = ["boxy/python", "boxy/bedrock", "agentcore-container"]');
+    expect(containerProfile('packs = ["boxy/python"]\n', ["a", "b"])).toContain(
+      'packs = ["boxy/python", "a", "b"]',
+    );
     expect(out).toMatch(
       /\[options\]\n# Set by agentcore[^\n]*\npython\.venv = "\/opt\/agent-venv"\npython\.runtime = "\/usr\/local"/,
     );
@@ -114,6 +123,41 @@ describe("stageBoxContainer", () => {
     ).toContain('host = "0.0.0.0"');
   });
 
+  test("adds the AWS routes to the deployed profile", async () => {
+    const root = boxProject();
+    const env = {
+      AGENTCORE_BOXY_SOURCE: gitRepo("Cargo.toml", "[workspace]\n"),
+      AGENTCORE_BOX_SOURCE: gitRepo("README.md", "box\n"),
+    };
+    const local = await stageBoxContainer({
+      projectRoot: root,
+      runtime: { name: "agent", codeLocation: "app/agent" },
+      env,
+    });
+    const localProfile = readFileSync(join(root, local, "box-container", "profile.toml"), "utf8");
+    expect(localProfile).not.toContain("aws://box-runtime");
+    expect(localProfile).toContain('"agentcore-container", "agentcore-runtime"]');
+
+    const deployed = await stageBoxContainer({
+      projectRoot: root,
+      runtime: { name: "agent", codeLocation: "app/agent" },
+      target: { kind: "aws", region: "eu-west-1" },
+      env,
+    });
+    const profile = readFileSync(join(root, deployed, "box-container", "profile.toml"), "utf8");
+    expect(profile).toContain('[egress.bedrock]\nsecret.ref = "aws://box-runtime"');
+    expect(profile).toContain(
+      'destinations = ["*.gateway.bedrock-agentcore.eu-west-1.amazonaws.com"]',
+    );
+    expect(profile).toContain('destinations = ["bedrock-agentcore.eu-west-1.amazonaws.com"]');
+    expect(
+      readFileSync(
+        join(root, deployed, "box-container", "packs", "agentcore-runtime", "pack.toml"),
+        "utf8",
+      ),
+    ).toContain('name = "agentcore-runtime"');
+  });
+
   test("asks for the boxy source when it is not set", async () => {
     const root = boxProject();
     await expect(
@@ -123,5 +167,63 @@ describe("stageBoxContainer", () => {
         env: {},
       }),
     ).rejects.toBeInstanceOf(InvalidEnvironmentError);
+  });
+});
+
+describe("awsRoutes", () => {
+  test("refuses a route the user's profile already declares, and a bad region", () => {
+    expect(() => awsRoutes("us-west-2", '[egress.bedrock]\nsecret.ref = "aws://x"\n')).toThrow(
+      InvalidEnvironmentError,
+    );
+    expect(() => awsRoutes("us-west-2", "[egress.agentcore-gateway.secret]\n")).toThrow(
+      InvalidEnvironmentError,
+    );
+    // A commented example is not a declaration.
+    expect(awsRoutes("us-west-2", "# [egress.bedrock]\n")).toContain("[egress.bedrock]");
+    expect(() => awsRoutes('us-west-2"\n[x]')).toThrow(InvalidEnvironmentError);
+  });
+});
+
+// entrypoint.sh writes the agentcore-runtime pack from the container's environment with Python.
+const python = Bun.which("python3");
+describe.skipIf(!python)("entrypoint.sh's agentcore-runtime pack", () => {
+  test("passes the Gateway and Memory identifiers and no secret", () => {
+    const script = readFileSync(
+      join(import.meta.dir, "../../assets/box/container/entrypoint.sh"),
+      "utf8",
+    );
+    const body = /pack\.toml <<'PY'\n([\s\S]*?)\nPY\n/.exec(script)?.[1];
+    expect(body).toBeDefined();
+    const out = join(temp(), "packs", "agentcore-runtime", "pack.toml");
+    execFileSync(python!, ["-", out], {
+      input: body,
+      env: {
+        PATH: process.env.PATH ?? "",
+        AGENTCORE_GATEWAY_TOOLS_URL:
+          "https://gw-1.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp",
+        AGENTCORE_GATEWAY_TOOLS_AUTH_TYPE: "AWS_IAM",
+        MEMORY_NOTES_ID: "notes-abc123",
+        MEMORY_NOTES_ARN: "arn:aws:bedrock-agentcore:us-west-2:111122223333:memory/notes-abc123",
+        // Secrets that share a prefix with the identifiers.
+        AGENTCORE_CREDENTIAL_OPENAI_KEY: "sk-secret",
+        AGENTCORE_CREDENTIAL_WALLET_API_KEY_ID: "key-id-secret",
+        AGENTCORE_GATEWAY_TOOLS_TOKEN: "token-secret",
+        MEMORY_PASSWORD: "pw-secret",
+        AWS_BEARER_TOKEN_BEDROCK: "bedrock-secret",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+        // Not a plain identifier, so not passed.
+        MEMORY_ODD_ID: 'a" \n[x]',
+      },
+    });
+    const pack = readFileSync(out, "utf8");
+    expect(pack).toContain('name = "agentcore-runtime"');
+    expect(pack).toContain(
+      'AGENTCORE_GATEWAY_TOOLS_URL = "https://gw-1.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp"',
+    );
+    expect(pack).toContain('AGENTCORE_GATEWAY_TOOLS_AUTH_TYPE = "AWS_IAM"');
+    expect(pack).toContain('MEMORY_NOTES_ID = "notes-abc123"');
+    expect(pack).toContain("MEMORY_NOTES_ARN = ");
+    expect(pack).not.toContain("secret");
+    expect(pack).not.toContain("MEMORY_ODD_ID");
   });
 });

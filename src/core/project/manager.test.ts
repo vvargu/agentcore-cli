@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { writeMigrationState } from "./migrate/journal";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import semver from "semver";
 import {
@@ -3155,6 +3155,52 @@ describe("docs-only runtimes", () => {
     const expected = structuredClone(edited);
     expected.runtimes[0].runtimeVersion = "PYTHON_3_12";
     expect(await readFile(specPath, "utf-8")).toBe(JSON.stringify(expected, null, 2));
+  });
+
+  test("a box project becomes a Container build from its staged box image", async () => {
+    const { manager: subject } = manager();
+    const project = await runAdd(subject, await emptyProject(subject), docsRuntime());
+    const appDir = join(project.rootPath, "app", "search");
+    await writeFile(join(appDir, "main.py"), "");
+    await writeFile(join(appDir, "pyproject.toml"), '[project]\nname = "search"\n');
+    await mkdir(join(project.rootPath, "box"), { recursive: true });
+    await writeFile(join(project.rootPath, "box", "profile.toml"), 'packs = ["boxy/python"]\n');
+    // Any git checkout serves as the boxy and Box Core sources here: this repository.
+    const source = resolve(import.meta.dir, "../../..");
+    const saved = [process.env.AGENTCORE_BOXY_SOURCE, process.env.AGENTCORE_BOX_SOURCE];
+    process.env.AGENTCORE_BOXY_SOURCE = process.env.AGENTCORE_BOX_SOURCE = source;
+    try {
+      const resolved = (await subject.resolve({ filePath: appDir }))!;
+      const result = await subject.syncRuntimeBuilds(resolved, {
+        purpose: "deploy",
+        region: "us-west-2",
+      });
+
+      expect(result.written).toBe(true);
+      expect(result.messages).toContain(
+        'runtime "search": build Container from .box-build/search/ (box project)',
+      );
+      const onDisk = JSON.parse(
+        await readFile(join(project.rootPath, "agentcore", "agentcore.json"), "utf-8"),
+      ).runtimes[0];
+      expect(onDisk).toMatchObject({
+        build: "Container",
+        buildContextPath: ".box-build/search",
+        dockerfile: "Dockerfile",
+      });
+      expect(onDisk.runtimeVersion).toBeUndefined();
+      const profile = await readFile(
+        join(project.rootPath, ".box-build", "search", "box-container", "profile.toml"),
+        "utf-8",
+      );
+      expect(profile).toContain('secret.ref = "aws://box-runtime"');
+      expect(profile).toContain('"*.gateway.bedrock-agentcore.us-west-2.amazonaws.com"');
+    } finally {
+      process.env.AGENTCORE_BOXY_SOURCE = saved[0];
+      process.env.AGENTCORE_BOX_SOURCE = saved[1];
+      if (saved[0] === undefined) delete process.env.AGENTCORE_BOXY_SOURCE;
+      if (saved[1] === undefined) delete process.env.AGENTCORE_BOX_SOURCE;
+    }
   });
 
   test("a v0 project is never rewritten", async () => {

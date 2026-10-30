@@ -368,6 +368,8 @@ export type SyncRuntimeBuildsInput = {
   purpose: "dev" | "deploy";
   /** Only these runtimes; every runtime when omitted. */
   runtimeNames?: string[];
+  /** The deploy target's region: a box project's deployed profile routes to its AWS endpoints. */
+  region?: string;
 };
 
 export type SyncRuntimeBuildsResult = {
