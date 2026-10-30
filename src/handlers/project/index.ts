@@ -7,6 +7,7 @@ import {
   watchFile,
   type AppIO,
 } from "../../io";
+import { BoxDevRunner } from "../../core/box/dev";
 import { CodeZipDevRunner } from "../../core/dev/codezip";
 import { ContainerDevRunner } from "../../core/dev/container";
 import { InspectorAssets } from "../../core/dev/inspectorAssets";
@@ -62,8 +63,9 @@ export function createProjectHandlers(
       io,
       middlewares: [withProjectMiddleware],
       runners: {
-        CodeZip: new CodeZipDevRunner(),
-        Container: new ContainerDevRunner(),
+        // A box project (box/profile.toml) runs in the box image whatever its build.
+        CodeZip: new BoxDevRunner({ fallback: new CodeZipDevRunner() }),
+        Container: new BoxDevRunner({ fallback: new ContainerDevRunner() }),
       },
       loadDevEnvironment,
       checkPort,

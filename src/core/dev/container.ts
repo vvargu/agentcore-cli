@@ -58,6 +58,8 @@ type ContainerDevRunnerConfig = {
   toolAvailable?: ToolAvailable;
   awsDirectory?: string;
   processEnv?: NodeJS.ProcessEnv;
+  /** Extra `run` flags, such as the ones Box Core needs to make its sandbox. */
+  runArgs?: string[];
 };
 
 export class ContainerDevRunner implements DevRunner {
@@ -65,12 +67,14 @@ export class ContainerDevRunner implements DevRunner {
   private readonly toolAvailable: ToolAvailable;
   private readonly awsDirectory: string;
   private readonly processEnv: NodeJS.ProcessEnv;
+  private readonly runArgs: string[];
 
   constructor(config: ContainerDevRunnerConfig = {}) {
     this.streamProcess = config.streamProcess ?? streamProcess;
     this.toolAvailable = config.toolAvailable ?? toolAvailable;
     this.awsDirectory = config.awsDirectory ?? join(homedir(), ".aws");
     this.processEnv = config.processEnv ?? process.env;
+    this.runArgs = config.runArgs ?? [];
   }
 
   public async *run(input: DevServerInput): AsyncGenerator<DevEvent, void> {
@@ -189,6 +193,7 @@ export class ContainerDevRunner implements DevRunner {
       "--add-host",
       "host.docker.internal:host-gateway",
       ...awsMount,
+      ...this.runArgs,
       "--env-file",
       envFile,
       imageTag,
