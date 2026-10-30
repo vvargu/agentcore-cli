@@ -51,7 +51,8 @@ export function isBoxProject(projectRoot: string): boolean {
 
 export type StageBoxContainerInput = {
   projectRoot: string;
-  runtime: { name: string; codeLocation: string };
+  /** `entrypoint` (agentcore.json, such as `main.py` or `app.py:app`) becomes `python.script`. */
+  runtime: { name: string; codeLocation: string; entrypoint?: string };
   /** `aws` for AgentCore Runtime (deploy); `local` for `agentcore dev`. */
   target?: { kind: "local" } | { kind: "aws"; region: string };
   env?: NodeJS.ProcessEnv;
@@ -104,7 +105,11 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
   const profileDir = join(context, "box-container");
   const packs = [CONTAINER_PACK, RUNTIME_PACK];
   for (const pack of packs) mkdirSync(join(profileDir, "packs", pack), { recursive: true });
-  const profile = containerProfile(readFileSync(join(box, "profile.toml"), "utf8"), packs);
+  const profile = containerProfile(
+    readFileSync(join(box, "profile.toml"), "utf8"),
+    packs,
+    input.runtime.entrypoint,
+  );
   writeFileSync(
     join(profileDir, "profile.toml"),
     target.kind === "aws"
@@ -130,14 +135,24 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
  * The user's profile for the container: agentcore's packs after the project's packs, and the
  * image's Python paths in [options]. String edits keep the user's comments.
  */
-export function containerProfile(profile: string, packs: string[] = [CONTAINER_PACK]): string {
+export function containerProfile(
+  profile: string,
+  packs: string[] = [CONTAINER_PACK],
+  entrypoint?: string,
+): string {
   const added = packs.map((pack) => `"${pack}"`).join(", ");
   let out = profile.replace(/^packs\s*=\s*\[([^\]]*)\]/m, (_line, list: string) => {
     const items = list.trim().replace(/,\s*$/, "");
     return `packs = [${items ? `${items}, ` : ""}${added}]`;
   });
   if (out === profile) out = `packs = [${added}]\n${out}`;
-  const lines = Object.entries(CONTAINER_OPTIONS).map(([key, value]) => `${key} = "${value}"`);
+  const options: Record<string, string> = { ...CONTAINER_OPTIONS };
+  // The runtime's entry file, unless the user's profile names one itself.
+  const script = entrypoint?.split(":")[0];
+  if (script && script !== "main.py" && !/^\s*python\.script\s*=/m.test(profile)) {
+    options["python.script"] = script;
+  }
+  const lines = Object.entries(options).map(([key, value]) => `${key} = "${value}"`);
   const header = /^\[options\]\s*$/m;
   return header.test(out)
     ? out.replace(

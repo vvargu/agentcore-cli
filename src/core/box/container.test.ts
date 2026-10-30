@@ -72,6 +72,21 @@ describe("containerProfile", () => {
     expect(out).toContain('bedrock.region = "us-west-2"');
   });
 
+  test("sets python.script from the runtime entrypoint unless the profile sets it", () => {
+    const profile = boxProfileToml("us-west-2");
+    expect(containerProfile(profile, undefined, "main.py")).not.toContain("python.script");
+    expect(containerProfile(profile, undefined, "app.py:app")).toContain(
+      'python.script = "app.py"',
+    );
+    expect(
+      containerProfile(
+        profile.replace("[options]\n", '[options]\npython.script = "x.py"\n'),
+        undefined,
+        "app.py",
+      ),
+    ).not.toContain('python.script = "app.py"');
+  });
+
   test("adds [options] and packs when the profile has neither", () => {
     const out = containerProfile('[tool.curl]\ncommand = ["/usr/bin/curl"]\n');
     expect(out.startsWith('packs = ["agentcore-container"]\n')).toBe(true);
