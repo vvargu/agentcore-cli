@@ -16,6 +16,7 @@ import { isDirectory, isFile, resolvePathWithinProject } from "./path";
 import { DEV_PORTS } from "./port";
 
 const CONTAINER_TOOLS = ["docker", "podman", "finch"] as const;
+const CONTAINER_TOOL_ENV = "AGENTCORE_CONTAINER_TOOL";
 const AWS_ENV_KEYS = [
   "AWS_ACCESS_KEY_ID",
   "AWS_SECRET_ACCESS_KEY",
@@ -230,6 +231,24 @@ export class ContainerDevRunner implements DevRunner {
   }
 
   private async resolveContainerTool(signal: AbortSignal): Promise<ContainerTool> {
+    // AGENTCORE_CONTAINER_TOOL picks one, such as finch when docker is installed but not running.
+    const chosen = this.processEnv[CONTAINER_TOOL_ENV];
+    if (chosen) {
+      if (!(CONTAINER_TOOLS as readonly string[]).includes(chosen)) {
+        throw new InputValidationError(
+          `${CONTAINER_TOOL_ENV} must be one of ${CONTAINER_TOOLS.join(", ")}, not '${chosen}'.`,
+        );
+      }
+      const tool = chosen as ContainerTool;
+      const canBuild = await this.toolAvailable(tool, ["build", "--help"]);
+      signal.throwIfAborted();
+      if (canBuild) return tool;
+      throw new InvalidEnvironmentError(
+        tool === "finch"
+          ? "Finch cannot build. Start its VM with 'finch vm start' (or 'finch vm init' the first time) and retry."
+          : `${CONTAINER_TOOL_ENV}=${tool}, but '${tool} build' is not available.`,
+      );
+    }
     for (const tool of CONTAINER_TOOLS) {
       const hasVersion = await this.toolAvailable(tool);
       signal.throwIfAborted();
