@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { isBoxProject, stageBoxContainer } from "../box/container";
+import { isBoxProject, stageBoxContainer, type LocalGateway } from "../box/container";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import semver from "semver";
@@ -1553,6 +1553,42 @@ export class FsProjectManager implements ProjectManager {
   }
 
   /**
+   * For `agentcore dev` on a box project: the deployed Gateways (on the default target) that the
+   * local agent may call. None when the project has no Gateway or is not deployed yet; that is
+   * reported, not an error, since dev works without them.
+   */
+  private async localGateways(
+    project: Project,
+    input: SyncRuntimeBuildsInput,
+    messages: string[],
+  ): Promise<LocalGateway[]> {
+    if (input.purpose !== "dev" || project.spec.agentCoreGateways.length === 0) return [];
+    try {
+      const { resources, target } = await this.resolveDeployedResources(project, {
+        target: DEFAULT_TARGET_NAME,
+      });
+      const gateways = resources
+        .filter((resource) => resource.resourceType === "gateway")
+        .map((gateway) => ({
+          envName: `AGENTCORE_GATEWAY_${gateway.name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_URL`,
+          url: `https://${gateway.id}.gateway.bedrock-agentcore.${target.region}.amazonaws.com`,
+          region: target.region,
+        }));
+      for (const gateway of gateways) {
+        messages.push(`box project: local agent calls the deployed Gateway ${gateway.envName}`);
+      }
+      return gateways;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      messages.push(
+        `box project: no deployed Gateway for the local agent (${detail.split("\n")[0]}); ` +
+          "run `agentcore deploy` once to call Gateway tools from agentcore dev",
+      );
+      return [];
+    }
+  }
+
+  /**
    * A box project (box/profile.toml) runs each runtime in the box image: stage its build context
    * (.box-build/<runtime>, with the AWS routes for deploy) and make agentcore.json say so, a
    * Container build from that context. POC: the edit stays in agentcore.json.
@@ -1567,7 +1603,9 @@ export class FsProjectManager implements ProjectManager {
       input.purpose === "deploy"
         ? (input.region ?? (await this.listTargets(project))[0]?.region ?? process.env.AWS_REGION)
         : undefined;
-    const target = region ? { kind: "aws" as const, region } : { kind: "local" as const };
+    const target = region
+      ? { kind: "aws" as const, region }
+      : { kind: "local" as const, gateways: await this.localGateways(project, input, messages) };
     if (input.purpose === "deploy" && !region) {
       messages.push(
         "box project: no deploy region (no target in aws-targets.json, no AWS_REGION), so the box " +
