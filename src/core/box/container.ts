@@ -47,11 +47,20 @@ export type StageBoxContainerInput = {
   projectRoot: string;
   /** `entrypoint` (agentcore.json, such as `main.py` or `app.py:app`) becomes `python.script`. */
   runtime: { name: string; codeLocation: string; entrypoint?: string };
-  /** `aws` for AgentCore Runtime (deploy); `local` for `agentcore dev`. */
-  target?: { kind: "local" } | { kind: "aws"; region: string };
+  /**
+   * `aws` for AgentCore Runtime (deploy). `local` for `agentcore dev`; `gateways` are the deployed
+   * Gateways the local agent may call, signed with the developer's own AWS credentials.
+   */
+  target?: { kind: "local"; gateways?: LocalGateway[] } | { kind: "aws"; region: string };
   env?: NodeJS.ProcessEnv;
   assets?: AssetSource;
 };
+
+/** A deployed Gateway for `agentcore dev`: its env var name and URL, as the CDK sets them. */
+export type LocalGateway = { envName: string; url: string; region: string };
+
+/** Only in a local image with deployed Gateways: their URLs and the route that signs for them. */
+const LOCAL_GATEWAY_PACK = "agentcore-local-gateway";
 
 /** Where the box image builds from, relative to the project root. */
 export type BoxBuild = { context: string; dockerfile: string };
@@ -120,7 +129,8 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
   // The container profile.
   const box = join(input.projectRoot, BOX_DIRECTORY);
   const profileDir = join(context, "box-container");
-  const packs = [CONTAINER_PACK, RUNTIME_PACK];
+  const gateways = target.kind === "local" ? (target.gateways ?? []) : [];
+  const packs = [CONTAINER_PACK, RUNTIME_PACK, ...(gateways.length ? [LOCAL_GATEWAY_PACK] : [])];
   for (const pack of packs) mkdirSync(join(profileDir, "packs", pack), { recursive: true });
   const profile = containerProfile(
     readFileSync(join(box, "profile.toml"), "utf8"),
@@ -145,6 +155,12 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
     join(profileDir, "packs", RUNTIME_PACK, "pack.toml"),
     `[pack]\nname = "${RUNTIME_PACK}"\nversion = 1\n`,
   );
+  if (gateways.length) {
+    writeFileSync(
+      join(profileDir, "packs", LOCAL_GATEWAY_PACK, "pack.toml"),
+      localGatewayPack(gateways),
+    );
+  }
   return { context: BOX_BUILD_CONTEXT, dockerfile };
 }
 
@@ -195,6 +211,42 @@ export function boxSecretNames(projectRoot: string): string[] {
     }
   }
   return [...names].sort();
+}
+
+/**
+ * The local image's Gateway pack: each deployed Gateway's URL for the agent, and the same Gateway
+ * route as on AgentCore Runtime. Locally `box-runtime` holds the developer's AWS credentials, which
+ * entrypoint.sh writes from the ones `agentcore dev` passes in, so Box signs as the developer.
+ */
+export function localGatewayPack(gateways: LocalGateway[]): string {
+  const regions = [...new Set(gateways.map((gateway) => gateway.region))];
+  for (const region of regions) {
+    if (!/^[a-z]{2}(-[a-z]+)+-\d+$/.test(region)) {
+      throw new InvalidEnvironmentError(`"${region}" is not an AWS region for the box profile.`);
+    }
+  }
+  const env = gateways.map(({ envName, url }) => {
+    if (
+      !/^[A-Z][A-Z0-9_]*$/.test(envName) ||
+      !/^https:\/\/[a-z0-9.-]+(\/[A-Za-z0-9/_-]*)?$/.test(url)
+    ) {
+      throw new InvalidEnvironmentError(`unexpected Gateway variable ${envName}=${url}`);
+    }
+    return `${envName} = "${url}"`;
+  });
+  return `# Written by agentcore dev: the project's deployed Gateways, for the local agent.
+[pack]
+name = "${LOCAL_GATEWAY_PACK}"
+version = 1
+
+[agent.env]
+${env.join("\n")}
+
+# Signed with your AWS credentials (entrypoint.sh writes them to the profile box-runtime).
+[egress.agentcore-gateway]
+destinations = [${regions.map((region) => `"*.gateway.bedrock-agentcore.${region}.amazonaws.com"`).join(", ")}]
+secret.ref = "aws://box-runtime"
+`;
 }
 
 /** The routes {@link awsRoutes} declares. */

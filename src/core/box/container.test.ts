@@ -21,6 +21,7 @@ import {
   BOX_DOCKERIGNORE,
   awsRoutes,
   boxDockerfile,
+  localGatewayPack,
   boxSecretNames,
   containerProfile,
   isBoxProject,
@@ -221,6 +222,62 @@ describe("stageBoxContainer", () => {
         "utf8",
       ),
     ).toContain('name = "agentcore-runtime"');
+  });
+
+  test("gives the local agent the deployed Gateways and a route signed as box-runtime", async () => {
+    const root = boxProject();
+    const env = boxyEnv();
+    const runtime = { name: "agent", codeLocation: "app/agent" };
+    const url = "https://demo-tools-4tz0r9jcyl.gateway.bedrock-agentcore.us-west-2.amazonaws.com";
+    await stageBoxContainer({
+      projectRoot: root,
+      runtime,
+      target: {
+        kind: "local",
+        gateways: [{ envName: "AGENTCORE_GATEWAY_TOOLS_URL", url, region: "us-west-2" }],
+      },
+      env,
+    });
+    const profileDir = join(root, ".box-build", "agent", "box-container");
+    const profile = readFileSync(join(profileDir, "profile.toml"), "utf8");
+    expect(profile).toContain('"agentcore-runtime", "agentcore-local-gateway"]');
+    // The user's profile gets no route: the Gateway route is in agentcore's own pack.
+    expect(profile).not.toContain("[egress.agentcore-gateway]");
+    const pack = readFileSync(
+      join(profileDir, "packs", "agentcore-local-gateway", "pack.toml"),
+      "utf8",
+    );
+    expect(pack).toContain(`AGENTCORE_GATEWAY_TOOLS_URL = "${url}"`);
+    expect(pack).toContain(
+      '[egress.agentcore-gateway]\ndestinations = ["*.gateway.bedrock-agentcore.us-west-2.amazonaws.com"]\nsecret.ref = "aws://box-runtime"',
+    );
+
+    // Without deployed Gateways the local image has no Gateway pack.
+    await stageBoxContainer({ projectRoot: root, runtime, target: { kind: "local" }, env });
+    expect(readFileSync(join(profileDir, "profile.toml"), "utf8")).not.toContain(
+      "agentcore-local-gateway",
+    );
+    expect(existsSync(join(profileDir, "packs", "agentcore-local-gateway"))).toBe(false);
+  });
+
+  test("refuses a Gateway URL or name that is not one", () => {
+    expect(() =>
+      localGatewayPack([
+        {
+          envName: "AGENTCORE_GATEWAY_TOOLS_URL",
+          url: 'https://x" \n[egress.y]',
+          region: "us-west-2",
+        },
+      ]),
+    ).toThrow("unexpected Gateway variable");
+    expect(() =>
+      localGatewayPack([{ envName: "lower", url: "https://x.example.com", region: "us-west-2" }]),
+    ).toThrow("unexpected Gateway variable");
+    expect(() =>
+      localGatewayPack([
+        { envName: "AGENTCORE_GATEWAY_TOOLS_URL", url: "https://x.example.com", region: "x" },
+      ]),
+    ).toThrow("is not an AWS region");
   });
 
   test("refuses boxy binaries that are not built for Linux arm64", async () => {

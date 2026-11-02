@@ -22,7 +22,10 @@ echo "entrypoint: covers over /proc remaining: $remaining"
 # instance metadata. So copy the execution role's credentials from the instance metadata endpoint
 # (IMDSv2) into that profile, and refresh it every 15 minutes. Only uid 1000 can read the file; the
 # agent's sandbox neither sees it nor reaches the endpoint (boxy's policy blocks IMDS).
-# `agentcore dev` sets LOCAL_DEV=1: locally the profile routes use env:// secrets, so skip this.
+# `agentcore dev` sets LOCAL_DEV=1 and passes your AWS credentials instead (AWS_ACCESS_KEY_ID and the
+# rest, or ~/.aws mounted at AWS_SHARED_CREDENTIALS_FILE). Box reads AWS_SHARED_CREDENTIALS_FILE too,
+# so local_credentials writes box-runtime to its own file and points Box at it; a deployed Gateway
+# then sees your identity. Without credentials, Gateway calls fail and the rest still works.
 IMDS=http://169.254.169.254/latest
 write_credentials() {
   token=$(curl -sf -m 3 -X PUT "$IMDS/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300") || return 1
@@ -39,8 +42,46 @@ sys.stdout.write("[box-runtime]\naws_access_key_id = %s\naws_secret_access_key =
   mv /home/box/.aws/credentials.tmp /home/box/.aws/credentials
   echo "entrypoint: execution role credentials written for profile box-runtime (role $role)"
 }
+local_credentials() {
+  mkdir -p /home/box/.aws && chown box:box /home/box/.aws && chmod 0700 /home/box/.aws
+  python3 - /home/box/.aws/credentials.tmp <<'PY' || return 1
+import configparser, os, sys
+keys = {k: os.environ.get(k) for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")}
+source = "the environment"
+if not (keys["AWS_ACCESS_KEY_ID"] and keys["AWS_SECRET_ACCESS_KEY"]):
+    path = os.environ.get("AWS_SHARED_CREDENTIALS_FILE", "")
+    profile = os.environ.get("AWS_PROFILE", "default")
+    parser = configparser.RawConfigParser()
+    if not (path and parser.read(path) and parser.has_section(profile)):
+        sys.exit("no AWS credentials passed in")
+    section = parser[profile]
+    keys = {
+        "AWS_ACCESS_KEY_ID": section.get("aws_access_key_id"),
+        "AWS_SECRET_ACCESS_KEY": section.get("aws_secret_access_key"),
+        "AWS_SESSION_TOKEN": section.get("aws_session_token"),
+    }
+    if not (keys["AWS_ACCESS_KEY_ID"] and keys["AWS_SECRET_ACCESS_KEY"]):
+        sys.exit("profile %s has no static keys" % profile)
+    source = "profile %s" % profile
+lines = ["[box-runtime]", "aws_access_key_id = %s" % keys["AWS_ACCESS_KEY_ID"],
+         "aws_secret_access_key = %s" % keys["AWS_SECRET_ACCESS_KEY"]]
+if keys["AWS_SESSION_TOKEN"]:
+    lines.append("aws_session_token = %s" % keys["AWS_SESSION_TOKEN"])
+with open(sys.argv[1], "w") as f:
+    f.write("\n".join(lines) + "\n")
+print("entrypoint: local dev; your AWS credentials (%s) written for profile box-runtime" % source)
+PY
+  chown box:box /home/box/.aws/credentials.tmp && chmod 0600 /home/box/.aws/credentials.tmp
+  mv /home/box/.aws/credentials.tmp /home/box/.aws/credentials
+}
 if [ "${LOCAL_DEV:-}" = "1" ]; then
-  echo "entrypoint: local dev; no AWS profile box-runtime"
+  if local_credentials; then
+    # Box reads AWS_SHARED_CREDENTIALS_FILE; point it at box-runtime's file, not the mounted ~/.aws.
+    export AWS_SHARED_CREDENTIALS_FILE=/home/box/.aws/credentials
+    unset AWS_CONFIG_FILE AWS_PROFILE
+  else
+    echo "entrypoint: local dev; no AWS credentials for box-runtime, so Gateway calls will fail"
+  fi
 elif write_credentials; then
   ( while sleep 900; do write_credentials >/dev/null || echo "entrypoint: credential refresh failed"; done ) &
 else
