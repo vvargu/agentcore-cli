@@ -16,6 +16,7 @@ import { boxProfileToml, BOX_POLICY_DW } from "../project/box";
 import {
   BOXY_BINARIES,
   awsRoutes,
+  boxDockerfile,
   boxSecretNames,
   containerProfile,
   isBoxProject,
@@ -147,6 +148,26 @@ describe("stageBoxContainer", () => {
     expect(
       readFileSync(join(profile, "packs", "agentcore-container", "pack.toml"), "utf8"),
     ).toContain('host = "0.0.0.0"');
+  });
+
+  test("builds with the agent folder's box Dockerfile, not a template's own one", async () => {
+    const root = boxProject();
+    const env = boxyEnv();
+    const runtime = { name: "agent", codeLocation: "app/agent" };
+    const user = `${await boxDockerfile("app/agent")}RUN apt-get install -y ffmpeg\n`;
+    writeFileSync(join(root, "app", "agent", "Dockerfile"), user);
+    let context = await stageBoxContainer({ projectRoot: root, runtime, env });
+    expect(readFileSync(join(root, context, "Dockerfile"), "utf8")).toBe(user);
+
+    // A Dockerfile that does not copy boxy in is not a box image: the built-in one is used.
+    writeFileSync(
+      join(root, "app", "agent", "Dockerfile"),
+      "FROM python:3.12\nCMD python main.py\n",
+    );
+    context = await stageBoxContainer({ projectRoot: root, runtime, env });
+    expect(readFileSync(join(root, context, "Dockerfile"), "utf8")).toBe(
+      await boxDockerfile("app/agent"),
+    );
   });
 
   test("adds the AWS routes to the deployed profile", async () => {

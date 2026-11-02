@@ -70,11 +70,12 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
   rmSync(context, { recursive: true, force: true });
   mkdirSync(join(context, ".box-src"), { recursive: true });
 
-  // The Dockerfile and the entry point.
-  const dockerfile = await assets.read(`${ASSET_DIRECTORY}/Dockerfile`);
+  // The Dockerfile: the user's {codeLocation}/Dockerfile when it builds a box image (it copies
+  // boxy in), else the built-in one. A Dockerfile from a non-box template is not a box image.
   writeFileSync(
     join(context, "Dockerfile"),
-    dockerfile.replaceAll("{{codeLocation}}", codeLocation),
+    userBoxDockerfile(join(input.projectRoot, codeLocation)) ??
+      (await boxDockerfile(codeLocation, assets)),
   );
   writeFileSync(
     join(context, "entrypoint.sh"),
@@ -218,6 +219,23 @@ secret.ref = "aws://box-runtime"
 destinations = ["bedrock-agentcore.${region}.amazonaws.com"]
 secret.ref = "aws://box-runtime"
 `;
+}
+
+/** The built-in box image Dockerfile for an agent in `codeLocation` (such as `app/agent`). */
+export async function boxDockerfile(
+  codeLocation: string,
+  assets: AssetSource = defaultSource(),
+): Promise<string> {
+  const dockerfile = await assets.read(`${ASSET_DIRECTORY}/Dockerfile`);
+  return dockerfile.replaceAll("{{codeLocation}}", codeLocation.replace(/\/+$/, ""));
+}
+
+/** The agent folder's Dockerfile, if it builds a box image: it copies the staged boxy in. */
+function userBoxDockerfile(agentFolder: string): string | undefined {
+  const path = join(agentFolder, "Dockerfile");
+  if (!existsSync(path)) return undefined;
+  const dockerfile = readFileSync(path, "utf8");
+  return dockerfile.includes("COPY .box-src/boxy/") ? dockerfile : undefined;
 }
 
 /** The programs the image needs: boxy and the two helpers Box Core runs from beside it. */

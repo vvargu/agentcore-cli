@@ -362,7 +362,7 @@ describe("project create", () => {
     ]);
   });
 
-  test("omits the Dockerfile from a CodeZip strands template", async () => {
+  test("omits the Dockerfile from a CodeZip strands template without box", async () => {
     const { path: directory, cleanup } = await inTempDirectory();
     cleanups.push(cleanup);
     await run([
@@ -371,6 +371,7 @@ describe("project create", () => {
       "MyProject",
       "--template",
       "agent-python-strands",
+      "--no-box",
       "--skip-install",
       "--skip-git",
     ]);
@@ -409,6 +410,11 @@ describe("project create", () => {
     expect(policy).not.toContain("metadata_");
     expect(policy.split("\n").every((line) => line === "" || line.startsWith("//"))).toBe(true);
     expect(await readFile(join(projectRoot, ".gitignore"), "utf-8")).toContain("\nbox/.venv/\n");
+    // The box image's Dockerfile sits with the agent's code, for the user to edit.
+    const dockerfile = await readFile(join(projectRoot, "app", "agent", "Dockerfile"), "utf-8");
+    expect(dockerfile).toContain("COPY .box-src/boxy/ /opt/boxy/");
+    expect(dockerfile).toContain("WORKDIR /app/app/agent\n");
+    expect(dockerfile).not.toContain("{{codeLocation}}");
     expect(io.stderr()).toContain(
       "next steps:\n  cd MyProject\n  cd app/agent && boxy profile show --full ../../box\n" +
         "  boxy run ../../box\n  agentcore dev",

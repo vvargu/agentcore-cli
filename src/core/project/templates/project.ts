@@ -11,6 +11,7 @@ import { mergeSpecEntries } from "./spec";
 import type { Template, TemplateRenderer } from "./types";
 import type { EnvLocalEntry } from "../../../handlers/project/types";
 import { BOX_DIRECTORY, BOX_GITIGNORE, BOX_POLICY_DW, boxProfileToml } from "../box";
+import { boxDockerfile } from "../../box/container";
 
 type CreateProjectConfig = {
   assetSource: AssetSource;
@@ -45,6 +46,17 @@ export async function createProjectTree(
   const envEntries = templates.flatMap((template) => template.envEntries ?? []);
 
   const box = options?.box;
+  // A box project's agent gets the box image Dockerfile, in place of a template's own one.
+  if (box && options?.runtime) {
+    for (const template of templates) {
+      const agent = template.tree;
+      const codeLocation = `app/${agent.name}`;
+      agent.children = [
+        ...agent.children.filter((child) => child.name !== "Dockerfile"),
+        FsTreeNode.createFile("Dockerfile", () => boxDockerfile(codeLocation, config.assetSource)),
+      ];
+    }
+  }
   const tree = FsTreeNode.createDirectory(".", [
     FsTreeNode.createFile(".gitignore", async () => {
       const gitignore = await config.assetSource.read("templates/shared/gitignore.template");
