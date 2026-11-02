@@ -380,6 +380,57 @@ describe("ContainerDevRunner", () => {
     expect(commandCall(calls, "build").command[0]).toBe("podman");
   });
 
+  test("uses the tool AGENTCORE_CONTAINER_TOOL names, even when docker is available", async () => {
+    const projectRuntime = runtime();
+    const root = await projectRoot(projectRuntime);
+    const { calls, runner } = harness({
+      available: async () => true,
+      processEnv: {
+        AWS_ACCESS_KEY_ID: "test-access-key",
+        AWS_SECRET_ACCESS_KEY: "test-secret-key",
+        AGENTCORE_CONTAINER_TOOL: "finch",
+      },
+    });
+
+    await collect(runner.run(input(root, projectRuntime)));
+
+    expect(commandCall(calls, "build").command[0]).toBe("finch");
+    expect(commandCall(calls, "run").command[0]).toBe("finch");
+  });
+
+  test("rejects an unknown AGENTCORE_CONTAINER_TOOL", async () => {
+    const projectRuntime = runtime();
+    const root = await projectRoot(projectRuntime);
+    const { runner } = harness({
+      processEnv: {
+        AWS_ACCESS_KEY_ID: "test-access-key",
+        AWS_SECRET_ACCESS_KEY: "test-secret-key",
+        AGENTCORE_CONTAINER_TOOL: "rancher",
+      },
+    });
+
+    await expect(collect(runner.run(input(root, projectRuntime)))).rejects.toThrow(
+      "AGENTCORE_CONTAINER_TOOL must be one of docker, podman, finch",
+    );
+  });
+
+  test("says how to start Finch when the chosen Finch cannot build", async () => {
+    const projectRuntime = runtime();
+    const root = await projectRoot(projectRuntime);
+    const { runner } = harness({
+      available: async () => false,
+      processEnv: {
+        AWS_ACCESS_KEY_ID: "test-access-key",
+        AWS_SECRET_ACCESS_KEY: "test-secret-key",
+        AGENTCORE_CONTAINER_TOOL: "finch",
+      },
+    });
+
+    await expect(collect(runner.run(input(root, projectRuntime)))).rejects.toThrow(
+      "finch vm start",
+    );
+  });
+
   test("falls back to finch when docker and podman are unavailable", async () => {
     const projectRuntime = runtime();
     const root = await projectRoot(projectRuntime);
