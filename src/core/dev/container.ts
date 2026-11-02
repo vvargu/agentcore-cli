@@ -25,6 +25,7 @@ const AWS_ENV_KEYS = [
   "AWS_PROFILE",
 ] as const;
 const CLEANUP_TIMEOUT_MS = 2_000;
+const BUILD_HEARTBEAT_MS = 15_000;
 const DOCKERFILE_NAME = "Dockerfile";
 const CONTAINER_RUNTIME_INSTALL_HINT =
   "Install Docker (https://docs.docker.com/get-docker/), Podman (https://podman.io/), " +
@@ -60,6 +61,8 @@ type ContainerDevRunnerConfig = {
   processEnv?: NodeJS.ProcessEnv;
   /** Extra `run` flags, such as the ones Box Core needs to make its sandbox. */
   runArgs?: string[];
+  /** How often a quiet image build reports that it is still running. */
+  heartbeatMs?: number;
 };
 
 export class ContainerDevRunner implements DevRunner {
@@ -68,6 +71,7 @@ export class ContainerDevRunner implements DevRunner {
   private readonly awsDirectory: string;
   private readonly processEnv: NodeJS.ProcessEnv;
   private readonly runArgs: string[];
+  private readonly heartbeatMs: number;
 
   constructor(config: ContainerDevRunnerConfig = {}) {
     this.streamProcess = config.streamProcess ?? streamProcess;
@@ -75,6 +79,7 @@ export class ContainerDevRunner implements DevRunner {
     this.awsDirectory = config.awsDirectory ?? join(homedir(), ".aws");
     this.processEnv = config.processEnv ?? process.env;
     this.runArgs = config.runArgs ?? [];
+    this.heartbeatMs = config.heartbeatMs ?? BUILD_HEARTBEAT_MS;
   }
 
   public async *run(input: DevServerInput): AsyncGenerator<DevEvent, void> {
@@ -150,7 +155,16 @@ export class ContainerDevRunner implements DevRunner {
     };
 
     yield { type: "status", message: `Building image with ${tool}` };
-    yield* this.streamProcess(buildCommand, buildOptions);
+    // A first build can download for minutes without printing; the status line keeps dev's
+    // readiness wait (which times out after a quiet spell) from giving up mid-build.
+    yield* withHeartbeat(
+      this.streamProcess(buildCommand, buildOptions),
+      this.heartbeatMs,
+      (ms) => ({
+        type: "status",
+        message: `Still building the image (${Math.round(ms / 1000)}s)`,
+      }),
+    );
 
     const containerPort = DEV_PORTS[input.runtime.protocol ?? "HTTP"];
     const forwardedEnv: Record<string, string> = {};
@@ -280,4 +294,43 @@ function hashString(value: string): string {
 
 function sanitizeImageNameComponent(value: string): string {
   return value.replace(/_{3,}/g, "__");
+}
+
+/**
+ * Yields every event of `source`, plus `beat(elapsedMs)` whenever `intervalMs` passes with no
+ * event. The source keeps running while a beat is yielded.
+ */
+export async function* withHeartbeat<T, B>(
+  source: AsyncIterable<T>,
+  intervalMs: number,
+  beat: (elapsedMs: number) => B,
+): AsyncGenerator<T | B, void> {
+  const started = Date.now();
+  const iterator = source[Symbol.asyncIterator]();
+  // A beat may be the last thing a consumer reads; mark each pending step as handled so its
+  // later rejection (an aborted build) is not reported as unhandled. Racing still sees it.
+  const next = () => {
+    const step = iterator.next();
+    step.catch(() => {});
+    return step;
+  };
+  let pending = next();
+  try {
+    while (true) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const tick = new Promise<"tick">((resolve) => {
+        timer = setTimeout(() => resolve("tick"), intervalMs);
+      });
+      const result = await Promise.race([pending, tick]).finally(() => clearTimeout(timer));
+      if (result === "tick") {
+        yield beat(Date.now() - started);
+        continue;
+      }
+      if (result.done) return;
+      yield result.value;
+      pending = next();
+    }
+  } finally {
+    await iterator.return?.();
+  }
 }
