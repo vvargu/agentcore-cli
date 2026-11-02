@@ -53,7 +53,9 @@ export async function createProjectTree(
       const codeLocation = `app/${agent.name}`;
       agent.children = [
         ...agent.children.filter((child) => child.name !== "Dockerfile"),
-        FsTreeNode.createFile("Dockerfile", () => boxDockerfile(codeLocation, config.assetSource)),
+        FsTreeNode.createFile("Dockerfile", () =>
+          boxDockerfile(codeLocation, agent.name, config.assetSource),
+        ),
       ];
     }
   }

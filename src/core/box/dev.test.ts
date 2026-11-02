@@ -57,7 +57,11 @@ describe("BoxDevRunner", () => {
   test("uses the fallback runner for a project without box/profile.toml", async () => {
     const fallback = new Recorder();
     const container = new Recorder();
-    const runner = new BoxDevRunner({ fallback, container, stage: async () => "unused" });
+    const runner = new BoxDevRunner({
+      fallback,
+      container,
+      stage: async () => ({ context: ".", dockerfile: "unused" }),
+    });
     await collect(runner.run(input(project(false))));
     expect(fallback.inputs).toHaveLength(1);
     expect(container.inputs).toHaveLength(0);
@@ -71,19 +75,23 @@ describe("BoxDevRunner", () => {
       container,
       stage: async () => {
         staged += 1;
-        return ".box-build/agent";
+        return { context: ".", dockerfile: "app/agent/Dockerfile" };
       },
       processEnv: {},
     });
-    const synced = input(project(true));
+    const root = project(true);
+    mkdirSync(join(root, ".box-build", "agent", "box-container"), { recursive: true });
+    const synced = input(root);
     synced.runtime = {
       ...synced.runtime,
       build: "Container",
-      buildContextPath: ".box-build/agent",
+      buildContextPath: ".",
+      dockerfile: "app/agent/Dockerfile",
     } as ProjectRuntime;
     await collect(runner.run(synced));
     expect(staged).toBe(0);
-    expect(container.inputs[0]!.runtime.buildContextPath as string).toBe(".box-build/agent");
+    expect(container.inputs[0]!.runtime.buildContextPath as string).toBe(".");
+    expect(container.inputs[0]!.runtime.dockerfile as string).toBe("app/agent/Dockerfile");
   });
 
   test("runs the staged box image with the profile's secrets", async () => {
@@ -91,7 +99,7 @@ describe("BoxDevRunner", () => {
     const runner = new BoxDevRunner({
       fallback: new Recorder(),
       container,
-      stage: async () => ".box-build/agent",
+      stage: async () => ({ context: ".", dockerfile: "app/agent/Dockerfile" }),
       processEnv: { EXAMPLE_API_KEY: "from-shell" },
     });
     const events = await collect(
@@ -102,7 +110,8 @@ describe("BoxDevRunner", () => {
 
     const ran = container.inputs[0]!;
     expect(ran.runtime.build).toBe("Container");
-    expect(ran.runtime.buildContextPath as string).toBe(".box-build/agent");
+    expect(ran.runtime.buildContextPath as string).toBe(".");
+    expect(ran.runtime.dockerfile as string).toBe("app/agent/Dockerfile");
     expect(events[0]).toEqual({ type: "status", message: "Box project: staging the box image" });
     expect(ran.env).toEqual({
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://host.docker.internal:4318",

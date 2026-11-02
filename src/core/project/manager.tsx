@@ -1580,21 +1580,34 @@ export class FsProjectManager implements ProjectManager {
     let edited = false;
     for (const runtime of project.spec.runtimes) {
       if (input.runtimeNames && !input.runtimeNames.includes(runtime.name)) continue;
-      const context = await stageBoxContainer({ projectRoot: project.rootPath, runtime, target });
-      messages.push(`runtime "${runtime.name}": box image staged in ${context}/ (${target.kind})`);
+      const { context, dockerfile } = await stageBoxContainer({
+        projectRoot: project.rootPath,
+        runtime,
+        target,
+      });
+      messages.push(
+        `runtime "${runtime.name}": box image staged in .box-build/${runtime.name}/ (${target.kind})`,
+      );
       const index = rawRuntimes.findIndex(
         (entry) => (entry as { name?: unknown } | null)?.name === runtime.name,
       );
       if (index < 0) continue;
       const entry = { ...(rawRuntimes[index] as Record<string, unknown>) };
-      if (entry.build === "Container" && entry.buildContextPath === context) continue;
+      if (
+        entry.build === "Container" &&
+        entry.buildContextPath === context &&
+        entry.dockerfile === dockerfile
+      )
+        continue;
       entry.build = "Container";
       entry.buildContextPath = context;
-      entry.dockerfile = "Dockerfile";
+      entry.dockerfile = dockerfile;
       delete entry.runtimeVersion;
       rawRuntimes[index] = entry;
       edited = true;
-      messages.push(`runtime "${runtime.name}": build Container from ${context}/ (box project)`);
+      messages.push(
+        `runtime "${runtime.name}": build Container from the project root with ${dockerfile} (box project)`,
+      );
     }
     if (!edited) return project;
     const updated = { ...raw, runtimes: rawRuntimes };

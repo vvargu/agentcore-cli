@@ -4,7 +4,14 @@ import type { DevEvent, DevRunner, DevServerInput } from "../../handlers/project
 import { rewriteOtelEndpointForContainer } from "../dev/otel/collector";
 import { ContainerDevRunner } from "../dev/container";
 import { join } from "node:path";
-import { BOX_BUILD_DIRECTORY, boxSecretNames, isBoxProject, stageBoxContainer } from "./container";
+import { existsSync } from "node:fs";
+import {
+  BOX_BUILD_CONTEXT,
+  BOX_BUILD_DIRECTORY,
+  boxSecretNames,
+  isBoxProject,
+  stageBoxContainer,
+} from "./container";
 
 /** Box Core makes user namespaces and mounts a fresh /proc for the agent's sandbox. */
 export const BOX_RUN_ARGS = [
@@ -43,11 +50,18 @@ export class BoxDevRunner implements DevRunner {
       yield* this.fallback.run(input);
       return;
     }
-    // syncRuntimeBuilds staged .box-build/<runtime> already; stage again when it is missing.
-    let context = join(BOX_BUILD_DIRECTORY, input.runtime.name);
-    if (input.runtime.buildContextPath !== context) {
+    // syncRuntimeBuilds staged .box-build/<runtime> and set the build already; else stage here.
+    let build = {
+      context: input.runtime.buildContextPath as string | undefined,
+      dockerfile: input.runtime.dockerfile as string | undefined,
+    };
+    if (
+      build.context !== BOX_BUILD_CONTEXT ||
+      !build.dockerfile ||
+      !existsSync(join(input.projectRoot, BOX_BUILD_DIRECTORY, input.runtime.name, "box-container"))
+    ) {
       yield { type: "status", message: "Box project: staging the box image" };
-      context = await this.stage({ projectRoot: input.projectRoot, runtime: input.runtime });
+      build = await this.stage({ projectRoot: input.projectRoot, runtime: input.runtime });
     }
 
     // Each env:// secret goes to the container, where boxy reads it; the agent never sees it.
@@ -68,8 +82,8 @@ export class BoxDevRunner implements DevRunner {
       runtime: {
         ...input.runtime,
         build: "Container",
-        buildContextPath: context,
-        dockerfile: "Dockerfile",
+        buildContextPath: build.context,
+        dockerfile: build.dockerfile,
       } as DevServerInput["runtime"],
     });
   }
