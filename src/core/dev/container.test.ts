@@ -13,7 +13,7 @@ import {
   type StreamProcessOptions,
 } from "../../io";
 import type { ProjectRuntime } from "../../projectSchemas/runtime";
-import { ContainerDevRunner } from "./container";
+import { ContainerDevRunner, withHeartbeat } from "./container";
 
 type ProcessCall = {
   command: string[];
@@ -699,5 +699,30 @@ describe("ContainerDevRunner", () => {
       { type: "status", message: "Starting container" },
       { type: "stderr", line: "run output" },
     ]);
+  });
+});
+
+describe("withHeartbeat", () => {
+  test("reports a quiet source and passes every event through", async () => {
+    async function* slow() {
+      yield "first";
+      await Bun.sleep(60);
+      yield "second";
+    }
+    const events: string[] = [];
+    for await (const event of withHeartbeat(slow(), 20, () => "beat")) events.push(event);
+    expect(events[0]).toBe("first");
+    expect(events.at(-1)).toBe("second");
+    expect(events.filter((event) => event === "beat").length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("adds nothing to a source that keeps talking", async () => {
+    async function* busy() {
+      yield "a";
+      yield "b";
+    }
+    const events: string[] = [];
+    for await (const event of withHeartbeat(busy(), 1_000, () => "beat")) events.push(event);
+    expect(events).toEqual(["a", "b"]);
   });
 });
