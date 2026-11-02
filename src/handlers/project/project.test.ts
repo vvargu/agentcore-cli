@@ -381,7 +381,7 @@ describe("project create", () => {
     expect(await Bun.file(join(runtimeRoot, ".dockerignore")).exists()).toBe(false);
   });
 
-  test("writes box/profile.toml and box/policy.dw beside app/ for a Python Strands template", async () => {
+  test("writes box/profile.toml beside app/ for a Python Strands template", async () => {
     const { path: directory, cleanup } = await inTempDirectory();
     cleanups.push(cleanup);
     const { io } = await run([
@@ -404,11 +404,10 @@ describe("project create", () => {
     expect(profile).toContain('# command = ["/usr/bin/curl"]');
     // The packs' default command fits main.py's app.run(); ingress comes from later layers.
     expect(profile).not.toMatch(/^\[agent/m);
-    const policy = await readFile(join(projectRoot, "box", "policy.dw"), "utf-8");
-    expect(policy).toContain('// @id("spawn_curl") permit');
-    // boxy adds the IMDS rules itself and refuses a duplicate id.
-    expect(policy).not.toContain("metadata_");
-    expect(policy.split("\n").every((line) => line === "" || line.startsWith("//"))).toBe(true);
+    // The user's own rules example lives in profile.toml; no policy.dw until the user writes one.
+    expect(profile).toContain('#   @id("spawn_curl") permit');
+    expect(profile).not.toContain("metadata_");
+    expect(await Bun.file(join(projectRoot, "box", "policy.dw")).exists()).toBe(false);
     expect(await readFile(join(projectRoot, ".gitignore"), "utf-8")).toContain("\nbox/.venv/\n");
     // The box image's Dockerfile sits with the agent's code, for the user to edit.
     const dockerfile = await readFile(join(projectRoot, "app", "agent", "Dockerfile"), "utf-8");

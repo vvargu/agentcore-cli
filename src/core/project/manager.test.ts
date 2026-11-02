@@ -494,7 +494,8 @@ describe("FsProjectManager.create", () => {
     expect(await readFile(join(projectRoot, "box", "profile.toml"), "utf-8")).toContain(
       'bedrock.region = "us-east-1"',
     );
-    expect(existsSync(join(projectRoot, "box", "policy.dw"))).toBe(true);
+    // No policy.dw: boxy writes the policy the profile needs; the user may add one.
+    expect(existsSync(join(projectRoot, "box", "policy.dw"))).toBe(false);
   });
 
   test("a box is written only for the templates boxy's packs fit", async () => {

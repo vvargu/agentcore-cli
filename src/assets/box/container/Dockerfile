@@ -9,7 +9,7 @@
 #   boxy/                  boxy and its helpers, prebuilt for Linux arm64 (AGENTCORE_BOXY_BIN),
 #                          and boxy's resources/ (AGENTCORE_BOXY_SOURCE)
 #   box-container/         the container profile: box/profile.toml with container settings,
-#                          box/policy.dw, and the agentcore-container pack
+#                          box/policy.dw if you wrote one, and the agentcore-container pack
 #   entrypoint.sh          prepares the container and starts boxy
 #
 # The same image runs locally (`agentcore dev`) and on AgentCore Runtime, which runs linux/arm64.

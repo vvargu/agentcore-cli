@@ -10,7 +10,7 @@ import { getRuntimeTemplateResolver } from "./runtime";
 import { mergeSpecEntries } from "./spec";
 import type { Template, TemplateRenderer } from "./types";
 import type { EnvLocalEntry } from "../../../handlers/project/types";
-import { BOX_DIRECTORY, BOX_GITIGNORE, BOX_POLICY_DW, boxProfileToml } from "../box";
+import { BOX_DIRECTORY, BOX_GITIGNORE, boxProfileToml } from "../box";
 import { boxDockerfile } from "../../box/container";
 
 type CreateProjectConfig = {
@@ -24,7 +24,7 @@ export async function createProjectTree(
   options?: {
     runtime?: ScaffoldRuntimeInput;
     importBedrockAgent?: ImportBedrockAgentInput;
-    /** Write box/profile.toml and box/policy.dw for boxy. */
+    /** Write box/profile.toml for boxy. */
     box?: { region: string };
   },
 ): Promise<{ tree: FsTreeNode; envEntries: EnvLocalEntry[] }> {
@@ -64,12 +64,11 @@ export async function createProjectTree(
       const gitignore = await config.assetSource.read("templates/shared/gitignore.template");
       return box ? `${gitignore}${BOX_GITIGNORE}` : gitignore;
     }),
-    // boxy's profile and the user's policy rules, beside app/ (see ../box.ts).
+    // boxy's profile, beside app/ (see ../box.ts).
     ...(box
       ? [
           FsTreeNode.createDirectory(BOX_DIRECTORY, [
             FsTreeNode.createFile("profile.toml", async () => boxProfileToml(box.region)),
-            FsTreeNode.createFile("policy.dw", async () => BOX_POLICY_DW),
           ]),
         ]
       : []),

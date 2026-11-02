@@ -137,7 +137,7 @@ export const createCreateProjectHandler = (config: CreateProjectHandlerConfig) =
       flag("skip-git", "skip initializing a git repository", z.boolean().default(false)),
       flag(
         "box",
-        "skip writing box/profile.toml and box/policy.dw for boxy (Python Strands templates with Bedrock)",
+        "skip writing box/profile.toml for boxy (Python Strands templates with Bedrock)",
         z.boolean().default(true),
       ),
     ],
