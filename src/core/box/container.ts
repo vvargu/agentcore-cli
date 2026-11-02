@@ -7,7 +7,7 @@
 //                               ($AGENTCORE_BOXY_BIN), and boxy's resources/ (packs) from
 //                               $AGENTCORE_BOXY_SOURCE
 //   box-container/              the container profile: box/profile.toml with container paths and
-//                               the agentcore-container pack, box/policy.dw, and box/packs/*
+//                               the agentcore-container pack, box/policy.dw if any, and box/packs/*
 //   entrypoint.sh               from src/assets/box/container
 //   Dockerfile                  only when the agent folder has no box Dockerfile (built-in)
 //

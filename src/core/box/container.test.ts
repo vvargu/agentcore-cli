@@ -12,7 +12,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InvalidEnvironmentError } from "../../errors";
-import { boxProfileToml, BOX_POLICY_DW } from "../project/box";
+import { boxProfileToml } from "../project/box";
+
+/** A policy.dw the user wrote. */
+const USER_POLICY_DW = '@id("spawn_curl") permit (principal, action, resource);\n';
 import {
   BOXY_BINARIES,
   BOX_DOCKERIGNORE,
@@ -61,7 +64,7 @@ function boxProject(profile = boxProfileToml("us-west-2")): string {
   writeFileSync(join(root, "app", "agent", ".env"), "SECRET=1\n");
   mkdirSync(join(root, "box", "packs", "mine"), { recursive: true });
   writeFileSync(join(root, "box", "profile.toml"), profile);
-  writeFileSync(join(root, "box", "policy.dw"), BOX_POLICY_DW);
+  writeFileSync(join(root, "box", "policy.dw"), USER_POLICY_DW);
   writeFileSync(
     join(root, "box", "packs", "mine", "pack.toml"),
     '[egress.search]\nsecret.ref = "env://SEARCH_KEY"\n',
@@ -142,7 +145,7 @@ describe("stageBoxContainer", () => {
     expect(existsSync(join(dir, "project"))).toBe(false);
     const profile = join(dir, "box-container");
     expect(readFileSync(join(profile, "profile.toml"), "utf8")).toContain('"agentcore-container"');
-    expect(readFileSync(join(profile, "policy.dw"), "utf8")).toBe(BOX_POLICY_DW);
+    expect(readFileSync(join(profile, "policy.dw"), "utf8")).toBe(USER_POLICY_DW);
     expect(existsSync(join(profile, "packs", "mine", "pack.toml"))).toBe(true);
     expect(
       readFileSync(join(profile, "packs", "agentcore-container", "pack.toml"), "utf8"),

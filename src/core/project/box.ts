@@ -1,5 +1,5 @@
 // The box folder `agentcore create` writes beside `app/`: a boxy profile
-// (`box/profile.toml`) and the user's own policy rules (`box/policy.dw`). boxy
+// (`box/profile.toml`); the user may add their own policy rules in `box/policy.dw`. boxy
 // runs the agent from them with `boxy run ../../box` from `app/<agent>`.
 // A project is a box project when `box/profile.toml` exists; the project spec
 // records nothing about it.
@@ -49,20 +49,17 @@ bedrock.region = "${region}"
 # destinations = ["api.example.com"]
 # secret.ref = "env://EXAMPLE_API_KEY"
 
-# Let the agent run a program, such as curl. Permit it in policy.dw as well.
+# Let the agent run a program, such as curl.
 # [tool.curl]
 # command = ["/usr/bin/curl"]
+
+# boxy writes the policy this profile needs: its routes, tools, and workspace, and a
+# block on cloud metadata services (IMDS). To add rules of your own, such as allowing
+# curl only for one URL, write them in box/policy.dw beside this file, each with an
+# @id that boxy does not use:
+#   @id("spawn_curl") permit (principal, action == Box::Action::"shell:spawn", resource) when { context.input.program_path == "/usr/bin/curl" && context.input has arg1 && context.input.arg1 == "https://api.example.com/status" };
 `;
 }
-
-/** `box/policy.dw`: the user's own rules. boxy adds its generated rules after these. */
-export const BOX_POLICY_DW = `// Your own policy rules for the box. boxy adds the rules the profile implies
-// (routes, tools, the workspace) and blocks cloud metadata services (IMDS);
-// do not repeat those, and give each rule an @id that boxy does not use.
-//
-// For example, to let the agent run curl ([tool.curl] in profile.toml) only for one URL:
-// @id("spawn_curl") permit (principal, action == Box::Action::"shell:spawn", resource) when { context.input.program_path == "/usr/bin/curl" && context.input has arg1 && context.input.arg1 == "https://api.example.com/status" };
-`;
 
 /**
  * The environment for the uv sync that makes boxy's venv, `<project>/box/.venv`,
