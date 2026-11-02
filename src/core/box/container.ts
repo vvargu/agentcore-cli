@@ -235,7 +235,7 @@ function binaryFolder(env: NodeJS.ProcessEnv): string {
   if (!folder) {
     throw new InvalidEnvironmentError(
       "Set AGENTCORE_BOXY_BIN to the folder with boxy, strands-box-sock-alias, and " +
-        "strands-box-contain-trampoline built for Linux arm64 (target-linux/release).",
+        "strands-box-contain-trampoline built for Linux arm64, such as staging-boxy/target/linux/release.",
     );
   }
   for (const name of BOXY_BINARIES) {
