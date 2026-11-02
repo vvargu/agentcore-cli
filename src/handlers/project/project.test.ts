@@ -412,7 +412,8 @@ describe("project create", () => {
     expect(await readFile(join(projectRoot, ".gitignore"), "utf-8")).toContain("\nbox/.venv/\n");
     // The box image's Dockerfile sits with the agent's code, for the user to edit.
     const dockerfile = await readFile(join(projectRoot, "app", "agent", "Dockerfile"), "utf-8");
-    expect(dockerfile).toContain("COPY .box-src/boxy/ /opt/boxy/");
+    expect(dockerfile).toContain("COPY .box-build/agent/boxy/ /opt/boxy/");
+    expect(dockerfile).not.toMatch(/\{\{\w+\}\}/);
     expect(dockerfile).toContain("WORKDIR /app/app/agent\n");
     expect(dockerfile).not.toContain("{{codeLocation}}");
     expect(io.stderr()).toContain(

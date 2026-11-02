@@ -1,13 +1,15 @@
 // The container image that runs a box project's agent with `boxy run` as its entry point.
-// stageBoxContainer writes the image's build context to `.box-build/<runtime>/`:
+// The image builds from the project root, with the agent's Dockerfile ({codeLocation}/Dockerfile)
+// and a root .dockerignore that lets in only app/ and .box-build/. stageBoxContainer writes what the
+// image needs from outside the project to `.box-build/<runtime>/`:
 //
-//   Dockerfile, entrypoint.sh   from src/assets/box/container
-//   .box-src/boxy/              boxy and its two helpers, prebuilt for Linux arm64
+//   boxy/                       boxy and its two helpers, prebuilt for Linux arm64
 //                               ($AGENTCORE_BOXY_BIN), and boxy's resources/ (packs) from
 //                               $AGENTCORE_BOXY_SOURCE
-//   project/<codeLocation>/     the agent's code, without host venvs or .env files
 //   box-container/              the container profile: box/profile.toml with container paths and
 //                               the agentcore-container pack, box/policy.dw, and box/packs/*
+//   entrypoint.sh               from src/assets/box/container
+//   Dockerfile                  only when the agent folder has no box Dockerfile (built-in)
 //
 // POC: the binaries come from a local Linux build until released boxy binaries ship.
 import {
@@ -19,7 +21,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { InvalidEnvironmentError } from "../../errors";
 import { BOX_DIRECTORY } from "../project/box";
 import { defaultSource, type AssetSource } from "../project/source";
@@ -35,14 +37,6 @@ const CONTAINER_OPTIONS = {
   // Box refuses /usr/local as a whole (a system root); the pack grants /usr/local/bin.
   "python.runtime": "/usr/local/lib",
 };
-const SKIPPED = new Set([
-  ".venv",
-  "__pycache__",
-  ".git",
-  "node_modules",
-  ".pytest_cache",
-  ".DS_Store",
-]);
 
 /** Whether the project is a box project: `box/profile.toml` exists. */
 export function isBoxProject(projectRoot: string): boolean {
@@ -59,8 +53,32 @@ export type StageBoxContainerInput = {
   assets?: AssetSource;
 };
 
-/** Writes the build context and returns its path relative to the project root. */
-export async function stageBoxContainer(input: StageBoxContainerInput): Promise<string> {
+/** Where the box image builds from, relative to the project root. */
+export type BoxBuild = { context: string; dockerfile: string };
+
+/** The build context: the project root. */
+export const BOX_BUILD_CONTEXT = ".";
+
+/**
+ * The root .dockerignore: an allowlist of app/ and .box-build/, without host venvs, .env files,
+ * caches, or node_modules. agentcore owns it (the first line marks it) and writes it each time.
+ */
+export const BOX_DOCKERIGNORE = `# Written by agentcore for the box image build, which runs from the project root.
+# Only app/ and .box-build/ go to Docker; host venvs and .env files never do.
+*
+!app
+!.box-build
+app/**/.venv
+app/**/.env
+app/**/.env.*
+app/**/__pycache__
+app/**/node_modules
+app/**/.pytest_cache
+**/.DS_Store
+`;
+
+/** Stages `.box-build/<runtime>/` and the root .dockerignore, and says where the image builds from. */
+export async function stageBoxContainer(input: StageBoxContainerInput): Promise<BoxBuild> {
   const env = input.env ?? process.env;
   const target = input.target ?? { kind: "local" };
   const assets = input.assets ?? defaultSource();
@@ -68,15 +86,20 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
   const relativeContext = join(BOX_BUILD_DIRECTORY, input.runtime.name);
   const context = join(input.projectRoot, relativeContext);
   rmSync(context, { recursive: true, force: true });
-  mkdirSync(join(context, ".box-src"), { recursive: true });
+  mkdirSync(context, { recursive: true });
 
-  // The Dockerfile: the user's {codeLocation}/Dockerfile when it builds a box image (it copies
-  // boxy in), else the built-in one. A Dockerfile from a non-box template is not a box image.
-  writeFileSync(
-    join(context, "Dockerfile"),
-    userBoxDockerfile(join(input.projectRoot, codeLocation)) ??
-      (await boxDockerfile(codeLocation, assets)),
-  );
+  // The Dockerfile: the user's {codeLocation}/Dockerfile when it builds a box image (it copies the
+  // staged boxy in), else the built-in one. A Dockerfile from a non-box template is not a box image.
+  const userDockerfile = join(codeLocation, "Dockerfile");
+  let dockerfile = userDockerfile;
+  if (!isBoxDockerfile(join(input.projectRoot, userDockerfile))) {
+    dockerfile = join(relativeContext, "Dockerfile");
+    writeFileSync(
+      join(input.projectRoot, dockerfile),
+      await boxDockerfile(codeLocation, input.runtime.name, assets),
+    );
+  }
+  writeDockerignore(input.projectRoot);
   writeFileSync(
     join(context, "entrypoint.sh"),
     await assets.read(`${ASSET_DIRECTORY}/entrypoint.sh`),
@@ -86,19 +109,13 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
   );
 
   // boxy, its helpers, and its packs, which Box Core and boxy find beside the running boxy.
-  const boxy = join(context, ".box-src", "boxy");
+  const boxy = join(context, "boxy");
   mkdirSync(boxy, { recursive: true });
   const bin = binaryFolder(env);
   for (const name of BOXY_BINARIES) {
     cpSync(join(bin, name), join(boxy, name));
   }
   cpSync(join(resourcesFolder(env), "resources"), join(boxy, "resources"), { recursive: true });
-
-  // The agent's code.
-  cpSync(join(input.projectRoot, codeLocation), join(context, "project", codeLocation), {
-    recursive: true,
-    filter: (path) => !SKIPPED.has(basename(path)) && !basename(path).startsWith(".env"),
-  });
 
   // The container profile.
   const box = join(input.projectRoot, BOX_DIRECTORY);
@@ -128,7 +145,7 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
     join(profileDir, "packs", RUNTIME_PACK, "pack.toml"),
     `[pack]\nname = "${RUNTIME_PACK}"\nversion = 1\n`,
   );
-  return relativeContext;
+  return { context: BOX_BUILD_CONTEXT, dockerfile };
 }
 
 /**
@@ -224,18 +241,31 @@ secret.ref = "aws://box-runtime"
 /** The built-in box image Dockerfile for an agent in `codeLocation` (such as `app/agent`). */
 export async function boxDockerfile(
   codeLocation: string,
+  runtimeName: string,
   assets: AssetSource = defaultSource(),
 ): Promise<string> {
   const dockerfile = await assets.read(`${ASSET_DIRECTORY}/Dockerfile`);
-  return dockerfile.replaceAll("{{codeLocation}}", codeLocation.replace(/\/+$/, ""));
+  return dockerfile
+    .replaceAll("{{codeLocation}}", codeLocation.replace(/\/+$/, ""))
+    .replaceAll("{{runtimeName}}", runtimeName);
 }
 
-/** The agent folder's Dockerfile, if it builds a box image: it copies the staged boxy in. */
-function userBoxDockerfile(agentFolder: string): string | undefined {
-  const path = join(agentFolder, "Dockerfile");
-  if (!existsSync(path)) return undefined;
-  const dockerfile = readFileSync(path, "utf8");
-  return dockerfile.includes("COPY .box-src/boxy/") ? dockerfile : undefined;
+/** Whether the file is a box image Dockerfile: it copies the staged boxy in. */
+function isBoxDockerfile(path: string): boolean {
+  return existsSync(path) && readFileSync(path, "utf8").includes("COPY .box-build/");
+}
+
+/** Writes the root .dockerignore, unless the user has one of their own there. */
+function writeDockerignore(projectRoot: string): void {
+  const path = join(projectRoot, ".dockerignore");
+  const marker = BOX_DOCKERIGNORE.split("\n")[0]!;
+  if (existsSync(path) && !readFileSync(path, "utf8").startsWith(marker)) {
+    throw new InvalidEnvironmentError(
+      `${path} is not agentcore's; the box image builds from the project root and needs its own ` +
+        ".dockerignore there. Move yours into the agent folder, or remove it.",
+    );
+  }
+  writeFileSync(path, BOX_DOCKERIGNORE);
 }
 
 /** The programs the image needs: boxy and the two helpers Box Core runs from beside it. */

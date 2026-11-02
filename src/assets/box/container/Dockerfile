@@ -2,12 +2,12 @@
 # ({{codeLocation}}) in its sandbox. This file is yours: `agentcore create` wrote it to
 # {{codeLocation}}/Dockerfile, and you may edit it, for example to apt-get a system package.
 #
-# agentcore builds it from .box-build/<runtime>/, which it stages on each dev, build, and deploy,
-# because the image needs files from outside this folder. The paths below are relative to that
-# staged folder:
-#   .box-src/boxy/         boxy and its helpers, prebuilt for Linux arm64 (AGENTCORE_BOXY_BIN),
+# agentcore builds it from the project root, so the paths below are relative to the root. A
+# .dockerignore that agentcore writes there lets in only app/ and .box-build/, and keeps out host
+# venvs and .env files. agentcore stages .box-build/{{runtimeName}}/ on each dev, build, and deploy
+# with what comes from outside the project:
+#   boxy/                  boxy and its helpers, prebuilt for Linux arm64 (AGENTCORE_BOXY_BIN),
 #                          and boxy's resources/ (AGENTCORE_BOXY_SOURCE)
-#   project/               the agent's code ({{codeLocation}}), without host venvs or .env files
 #   box-container/         the container profile: box/profile.toml with container settings,
 #                          box/policy.dw, and the agentcore-container pack
 #   entrypoint.sh          prepares the container and starts boxy
@@ -34,20 +34,20 @@ ENV UV_NO_CACHE=1 UV_COMPILE_BYTECODE=1 UV_NO_PROGRESS=1 \
     UV_PROJECT_ENVIRONMENT=/opt/agent-venv \
     UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX} UV_INDEX=${UV_INDEX}
 WORKDIR /app/{{codeLocation}}
-COPY project/{{codeLocation}}/pyproject.toml project/{{codeLocation}}/uv.lock* ./
+COPY {{codeLocation}}/pyproject.toml {{codeLocation}}/uv.lock* ./
 RUN if [ -f uv.lock ]; then uv sync --frozen --no-dev --no-install-project; \
     else uv sync --no-dev --no-install-project; fi
 
 # boxy, its two helper programs, and its resources (packs) sit in one folder: Box Core finds the
 # helpers beside the running boxy, and boxy finds resources/ beside itself.
-COPY .box-src/boxy/ /opt/boxy/
+COPY .box-build/{{runtimeName}}/boxy/ /opt/boxy/
 RUN chmod 0755 /opt/boxy/boxy /opt/boxy/strands-box-sock-alias /opt/boxy/strands-box-contain-trampoline
 
 # The project: the agent's code (the workspace, which the agent may write) and the container
 # profile in /app/.box/profile, outside the workspace.
-COPY project/ /app/
-COPY box-container/ /app/.box/profile/
-COPY entrypoint.sh /entrypoint.sh
+COPY {{codeLocation}}/ /app/{{codeLocation}}/
+COPY .box-build/{{runtimeName}}/box-container/ /app/.box/profile/
+COPY .box-build/{{runtimeName}}/entrypoint.sh /entrypoint.sh
 RUN chown -R box:box /app/{{codeLocation}} && chmod 0755 /entrypoint.sh
 
 # boxy's workspace is the folder it starts in: the agent's code.

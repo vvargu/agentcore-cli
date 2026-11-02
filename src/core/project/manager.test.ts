@@ -3185,15 +3185,15 @@ describe("docs-only runtimes", () => {
 
       expect(result.written).toBe(true);
       expect(result.messages).toContain(
-        'runtime "search": build Container from .box-build/search/ (box project)',
+        'runtime "search": build Container from the project root with .box-build/search/Dockerfile (box project)',
       );
       const onDisk = JSON.parse(
         await readFile(join(project.rootPath, "agentcore", "agentcore.json"), "utf-8"),
       ).runtimes[0];
       expect(onDisk).toMatchObject({
         build: "Container",
-        buildContextPath: ".box-build/search",
-        dockerfile: "Dockerfile",
+        buildContextPath: ".",
+        dockerfile: ".box-build/search/Dockerfile",
       });
       expect(onDisk.runtimeVersion).toBeUndefined();
       const profile = await readFile(

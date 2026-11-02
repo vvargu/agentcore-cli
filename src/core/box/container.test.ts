@@ -15,6 +15,7 @@ import { InvalidEnvironmentError } from "../../errors";
 import { boxProfileToml, BOX_POLICY_DW } from "../project/box";
 import {
   BOXY_BINARIES,
+  BOX_DOCKERIGNORE,
   awsRoutes,
   boxDockerfile,
   boxSecretNames,
@@ -113,34 +114,32 @@ describe("boxSecretNames", () => {
 });
 
 describe("stageBoxContainer", () => {
-  test("writes the build context for the box image", async () => {
+  test("stages the files from outside the project and builds from the root", async () => {
     const root = boxProject();
     const env = boxyEnv();
     expect(isBoxProject(root)).toBe(true);
 
-    const context = await stageBoxContainer({
+    const build = await stageBoxContainer({
       projectRoot: root,
       runtime: { name: "agent", codeLocation: "app/agent/" },
       env,
     });
 
-    const dir = join(root, context);
-    expect(context).toBe(join(".box-build", "agent"));
-    const dockerfile = readFileSync(join(dir, "Dockerfile"), "utf8");
+    // No Dockerfile in app/agent: the built-in one, staged.
+    expect(build).toEqual({ context: ".", dockerfile: join(".box-build", "agent", "Dockerfile") });
+    const dir = join(root, ".box-build", "agent");
+    const dockerfile = readFileSync(join(root, build.dockerfile), "utf8");
     expect(dockerfile).toContain("WORKDIR /app/app/agent\n");
-    expect(dockerfile).not.toContain("{{codeLocation}}");
+    expect(dockerfile).toContain("COPY app/agent/ /app/app/agent/");
+    expect(dockerfile).toContain("COPY .box-build/agent/boxy/ /opt/boxy/");
+    expect(dockerfile).not.toMatch(/\{\{\w+\}\}/);
     expect(statSync(join(dir, "entrypoint.sh")).mode & 0o111).not.toBe(0);
     for (const name of BOXY_BINARIES) {
-      expect(existsSync(join(dir, ".box-src", "boxy", name))).toBe(true);
+      expect(existsSync(join(dir, "boxy", name))).toBe(true);
     }
-    expect(
-      existsSync(join(dir, ".box-src", "boxy", "resources", "shared", "python", "pack.toml")),
-    ).toBe(true);
-    expect(dockerfile).toContain("COPY .box-src/boxy/ /opt/boxy/");
-    expect(dockerfile).not.toContain("cargo build");
-    expect(existsSync(join(dir, "project", "app", "agent", "main.py"))).toBe(true);
-    expect(existsSync(join(dir, "project", "app", "agent", ".venv"))).toBe(false);
-    expect(existsSync(join(dir, "project", "app", "agent", ".env"))).toBe(false);
+    expect(existsSync(join(dir, "boxy", "resources", "shared", "python", "pack.toml"))).toBe(true);
+    // The agent's code is not copied: the image takes it from app/agent.
+    expect(existsSync(join(dir, "project"))).toBe(false);
     const profile = join(dir, "box-container");
     expect(readFileSync(join(profile, "profile.toml"), "utf8")).toContain('"agentcore-container"');
     expect(readFileSync(join(profile, "policy.dw"), "utf8")).toBe(BOX_POLICY_DW);
@@ -148,47 +147,66 @@ describe("stageBoxContainer", () => {
     expect(
       readFileSync(join(profile, "packs", "agentcore-container", "pack.toml"), "utf8"),
     ).toContain('host = "0.0.0.0"');
+    // The root .dockerignore lets in only app/ and .box-build/, without venvs or .env files.
+    expect(readFileSync(join(root, ".dockerignore"), "utf8")).toBe(BOX_DOCKERIGNORE);
+    expect(BOX_DOCKERIGNORE).toContain("*\n!app\n!.box-build\napp/**/.venv\napp/**/.env\n");
   });
 
   test("builds with the agent folder's box Dockerfile, not a template's own one", async () => {
     const root = boxProject();
     const env = boxyEnv();
     const runtime = { name: "agent", codeLocation: "app/agent" };
-    const user = `${await boxDockerfile("app/agent")}RUN apt-get install -y ffmpeg\n`;
+    const user = `${await boxDockerfile("app/agent", "agent")}RUN apt-get install -y ffmpeg\n`;
     writeFileSync(join(root, "app", "agent", "Dockerfile"), user);
-    let context = await stageBoxContainer({ projectRoot: root, runtime, env });
-    expect(readFileSync(join(root, context, "Dockerfile"), "utf8")).toBe(user);
+    let build = await stageBoxContainer({ projectRoot: root, runtime, env });
+    expect(build).toEqual({ context: ".", dockerfile: join("app", "agent", "Dockerfile") });
+    expect(existsSync(join(root, ".box-build", "agent", "Dockerfile"))).toBe(false);
 
-    // A Dockerfile that does not copy boxy in is not a box image: the built-in one is used.
+    // A Dockerfile that does not copy the staged files in is not a box image: the built-in one.
     writeFileSync(
       join(root, "app", "agent", "Dockerfile"),
       "FROM python:3.12\nCMD python main.py\n",
     );
-    context = await stageBoxContainer({ projectRoot: root, runtime, env });
-    expect(readFileSync(join(root, context, "Dockerfile"), "utf8")).toBe(
-      await boxDockerfile("app/agent"),
+    build = await stageBoxContainer({ projectRoot: root, runtime, env });
+    expect(build.dockerfile).toBe(join(".box-build", "agent", "Dockerfile"));
+    expect(readFileSync(join(root, build.dockerfile), "utf8")).toBe(
+      await boxDockerfile("app/agent", "agent"),
     );
+  });
+
+  test("refuses to replace a .dockerignore the user wrote", async () => {
+    const root = boxProject();
+    writeFileSync(join(root, ".dockerignore"), "node_modules\n");
+    await expect(
+      stageBoxContainer({
+        projectRoot: root,
+        runtime: { name: "agent", codeLocation: "app/agent" },
+        env: boxyEnv(),
+      }),
+    ).rejects.toThrow("is not agentcore's");
+    expect(readFileSync(join(root, ".dockerignore"), "utf8")).toBe("node_modules\n");
   });
 
   test("adds the AWS routes to the deployed profile", async () => {
     const root = boxProject();
     const env = boxyEnv();
-    const local = await stageBoxContainer({
+    await stageBoxContainer({
       projectRoot: root,
       runtime: { name: "agent", codeLocation: "app/agent" },
       env,
     });
-    const localProfile = readFileSync(join(root, local, "box-container", "profile.toml"), "utf8");
+    const staged = join(root, ".box-build", "agent");
+    const localProfile = readFileSync(join(staged, "box-container", "profile.toml"), "utf8");
     expect(localProfile).not.toContain("aws://box-runtime");
     expect(localProfile).toContain('"agentcore-container", "agentcore-runtime"]');
 
-    const deployed = await stageBoxContainer({
+    await stageBoxContainer({
       projectRoot: root,
       runtime: { name: "agent", codeLocation: "app/agent" },
       target: { kind: "aws", region: "eu-west-1" },
       env,
     });
-    const profile = readFileSync(join(root, deployed, "box-container", "profile.toml"), "utf8");
+    const profile = readFileSync(join(staged, "box-container", "profile.toml"), "utf8");
     expect(profile).toContain('[egress.bedrock]\nsecret.ref = "aws://box-runtime"');
     expect(profile).toContain(
       'destinations = ["*.gateway.bedrock-agentcore.eu-west-1.amazonaws.com"]',
@@ -196,7 +214,7 @@ describe("stageBoxContainer", () => {
     expect(profile).toContain('destinations = ["bedrock-agentcore.eu-west-1.amazonaws.com"]');
     expect(
       readFileSync(
-        join(root, deployed, "box-container", "packs", "agentcore-runtime", "pack.toml"),
+        join(staged, "box-container", "packs", "agentcore-runtime", "pack.toml"),
         "utf8",
       ),
     ).toContain('name = "agentcore-runtime"');
