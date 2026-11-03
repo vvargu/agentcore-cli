@@ -370,6 +370,9 @@ export type SyncRuntimeBuildsInput = {
   runtimeNames?: string[];
   /** The deploy target's region: a box project's deployed profile routes to its AWS endpoints. */
   region?: string;
+  /** The deploy target's name: a box project's deployed profile routes to the Gateways already
+   * deployed there. The default target when omitted. */
+  target?: string;
 };
 
 export type SyncRuntimeBuildsResult = {

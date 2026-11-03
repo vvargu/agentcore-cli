@@ -149,6 +149,22 @@ describe("containerProfile", () => {
       containerProfile("# [egress.bedrock]\n", { awsRegion: "us-west-2" }),
     ).not.toThrow();
     expect(() => awsRouteTables('us-west-2"\n[x]')).toThrow(InvalidEnvironmentError);
+    // The deployed Gateways' own hosts replace the wildcard; anything else is refused.
+    const host = "demo-tools-4tz0r9jcyl.gateway.bedrock-agentcore.us-west-2.amazonaws.com";
+    const exact = toml(
+      containerProfile(boxProfileToml("us-west-2"), {
+        awsRegion: "us-west-2",
+        awsGatewayHosts: [host],
+      }),
+    );
+    expect(exact.egress["agentcore-gateway"].destinations).toEqual([host]);
+    for (const bad of [
+      "evil.example.com",
+      "x.gateway.bedrock-agentcore.eu-west-1.amazonaws.com",
+      "a.b.gateway.bedrock-agentcore.us-west-2.amazonaws.com",
+    ]) {
+      expect(() => awsRouteTables("us-west-2", [bad])).toThrow(InvalidEnvironmentError);
+    }
   });
 });
 
