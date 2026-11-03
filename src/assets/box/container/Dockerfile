@@ -11,6 +11,7 @@
 #   box-container/         the container profile: box/profile.toml with agentcore's tables added
 #                          (ingress, image folders, routes), and box/policy.dw if you wrote one
 #   entrypoint.sh          prepares the container and starts boxy
+#   scripts/               entrypoint.sh's Python helpers, in /opt/agentcore
 #
 # The same image runs locally (`agentcore dev`) and on AgentCore Runtime, which runs linux/arm64.
 
@@ -48,6 +49,7 @@ RUN chmod 0755 /opt/boxy/boxy /opt/boxy/strands-box-sock-alias /opt/boxy/strands
 COPY {{codeLocation}}/ /app/{{codeLocation}}/
 COPY .box-build/{{runtimeName}}/box-container/ /app/.box/profile/
 COPY .box-build/{{runtimeName}}/entrypoint.sh /entrypoint.sh
+COPY .box-build/{{runtimeName}}/scripts/ /opt/agentcore/
 RUN chown -R box:box /app/{{codeLocation}} && chmod 0755 /entrypoint.sh
 
 # boxy's workspace is the folder it starts in: the agent's code.
