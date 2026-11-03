@@ -280,7 +280,7 @@ describe("stageBoxContainer", () => {
     ]);
   });
 
-  test("gives the local agent the deployed Gateways and a route signed as box-runtime", async () => {
+  test("routes the local agent to the deployed Gateways, signed as box-runtime", async () => {
     const root = boxProject();
     const env = boxyEnv();
     const runtime = { name: "agent", codeLocation: "app/agent" };
@@ -296,7 +296,8 @@ describe("stageBoxContainer", () => {
     });
     const profileDir = join(root, ".box-build", "agent", "box-container");
     const profile = toml(readFileSync(join(profileDir, "profile.toml"), "utf8"));
-    expect(profile.agent.env.AGENTCORE_GATEWAY_TOOLS_URL).toBe(url);
+    // The URL is not in the profile: dev sets it on the container, and entrypoint.sh adds it.
+    expect(profile.agent.env).toEqual({});
     expect(profile.egress["agentcore-gateway"]).toEqual({
       destinations: ["demo-tools-4tz0r9jcyl.gateway.bedrock-agentcore.us-west-2.amazonaws.com"],
       secret: { ref: "aws://box-runtime" },

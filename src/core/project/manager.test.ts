@@ -3237,6 +3237,16 @@ describe("docs-only runtimes", () => {
         target: "default",
       });
       expect(added.messages.some((m) => m.includes("allows any Gateway in the region"))).toBe(true);
+
+      // dev: the Gateway's URL is for the container's environment, not written in the profile.
+      const dev = await subject.syncRuntimeBuilds(withGateway, { purpose: "dev" });
+      expect(dev.boxEnv).toEqual({ AGENTCORE_GATEWAY_TOOLS_URL: `https://${host}` });
+      const local = await readFile(
+        join(project.rootPath, ".box-build", "search", "box-container", "profile.toml"),
+        "utf-8",
+      );
+      expect(local).toContain(`destinations = [ "${host}" ]`);
+      expect(local).not.toContain("AGENTCORE_GATEWAY_TOOLS_URL");
     } finally {
       process.env.AGENTCORE_BOXY_BIN = saved[0];
       process.env.AGENTCORE_BOXY_SOURCE = saved[1];

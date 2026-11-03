@@ -382,6 +382,12 @@ export type SyncRuntimeBuildsResult = {
   messages: string[];
   /** Whether agentcore.json was rewritten. */
   written: boolean;
+  /**
+   * `agentcore dev` on a box project: the variables the CDK sets on AgentCore Runtime for the
+   * deployed Gateways (`AGENTCORE_GATEWAY_<NAME>_URL`), for dev to set on the container the same
+   * way. entrypoint.sh then passes them to the agent, as it does on AWS.
+   */
+  boxEnv?: Record<string, string>;
 };
 
 /** Discriminated union input for {@link ProjectManager.addResource}. */

@@ -1509,9 +1509,10 @@ export class FsProjectManager implements ProjectManager {
     // A v0 project's agentcore.json has the v0 shape and is never rewritten here.
     if (project.legacy) return { project, messages: [], written: false };
     const boxMessages: string[] = [];
+    const boxEnv: Record<string, string> = {};
     const before = project;
     if (isBoxProject(project.rootPath)) {
-      project = await this.stageBoxRuntimes(project, input, boxMessages);
+      project = await this.stageBoxRuntimes(project, input, boxMessages, boxEnv);
     }
     const runtimes = input.runtimeNames
       ? project.spec.runtimes.filter((runtime) => input.runtimeNames!.includes(runtime.name))
@@ -1519,7 +1520,7 @@ export class FsProjectManager implements ProjectManager {
     const prepared = prepareRuntimes(project.rootPath, runtimes, input.purpose);
     prepared.messages.unshift(...boxMessages);
     if (prepared.changed.length === 0) {
-      return { project, messages: prepared.messages, written: project !== before };
+      return { project, messages: prepared.messages, written: project !== before, boxEnv };
     }
 
     // Patch the raw file rather than re-serializing the parsed spec, so fields
@@ -1549,6 +1550,7 @@ export class FsProjectManager implements ProjectManager {
       project: { ...project, spec: parsed.data },
       messages: prepared.messages,
       written: true,
+      boxEnv,
     };
   }
 
@@ -1636,6 +1638,7 @@ export class FsProjectManager implements ProjectManager {
     project: Project,
     input: SyncRuntimeBuildsInput,
     messages: string[],
+    boxEnv: Record<string, string>,
   ): Promise<Project> {
     // Only deploy needs the AWS routes, so only deploy reads the targets.
     const region =
@@ -1653,6 +1656,10 @@ export class FsProjectManager implements ProjectManager {
           ),
         }
       : { kind: "local" as const, gateways: await this.localGateways(project, input, messages) };
+    // dev sets each Gateway's URL on the container, as the CDK does on AgentCore Runtime.
+    if (target.kind === "local") {
+      for (const gateway of target.gateways) boxEnv[gateway.envName] = gateway.url;
+    }
     if (input.purpose === "deploy" && !region) {
       messages.push(
         "box project: no deploy region (no target in aws-targets.json, no AWS_REGION), so the box " +
