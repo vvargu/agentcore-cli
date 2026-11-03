@@ -384,6 +384,8 @@ async function runRuntimeDev({
           runtimeNames,
         });
         for (const message of synced.messages) renderStatus({ io: config.io, message, json });
+        // A box project's deployed Gateways, set on the container as on AgentCore Runtime.
+        let boxEnv = synced.boxEnv ?? {};
         const runtimes = synced.project.spec.runtimes.filter(({ name }) =>
           runtimeNames.includes(name),
         );
@@ -405,7 +407,7 @@ async function runRuntimeDev({
             collector && (runtime.instrumentation?.enableOtel ?? true)
               ? otelEnvForRuntime(collector, runtime)
               : {};
-          return { ...env, ...otel };
+          return { ...env, ...otel, ...boxEnv };
         };
 
         if (input.mode === "headless" && input.agent) {
@@ -503,6 +505,7 @@ async function runRuntimeDev({
             return;
           }
           for (const message of synced.messages) renderStatus({ io: config.io, message, json });
+          boxEnv = synced.boxEnv ?? {};
           supervisor.setRuntimes(
             synced.project.spec.runtimes.filter(({ name }) => runtimeNames.includes(name)),
           );

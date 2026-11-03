@@ -89,6 +89,8 @@ else
 fi
 
 # --- Step 2b: the runtime's settings for the agent ------------------------------------------------
+# The CDK sets these variables on AgentCore Runtime; `agentcore dev` sets the Gateway ones the same
+# way, so this step is the only one that writes them into the profile.
 # The agent sees only [agent.env], not the container's environment. Pass on the variables that name
 # the project's Gateways and Memories (AGENTCORE_GATEWAY_<NAME>_URL/_ARN/_AUTH_TYPE,
 # MEMORY_<NAME>_ID/_ARN, and the imported GATEWAY_<ID>_* forms) by appending them to [agent.env],

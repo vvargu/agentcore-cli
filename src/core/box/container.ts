@@ -182,7 +182,7 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
 export type ContainerProfileOptions = {
   /** The runtime's `entrypoint` (such as `app.py:app`); its file becomes `python.script`. */
   entrypoint?: string;
-  /** `agentcore dev`: the deployed Gateways the local agent may call. */
+  /** `agentcore dev`: the deployed Gateways the local agent may call (their route). */
   gateways?: LocalGateway[];
   /** `agentcore deploy`: the region of the AWS routes, signed as the Runtime role. */
   awsRegion?: string;
@@ -256,13 +256,13 @@ export function boxSecretNames(projectRoot: string): string[] {
 }
 
 /**
- * The local image's Gateway tables: each deployed Gateway's URL for the agent, and a route to
- * exactly those Gateways' hosts. Locally `box-runtime` holds the developer's AWS credentials, which
+ * The local image's Gateway route: exactly the deployed Gateways' hosts. The URLs reach the agent
+ * the same way as on AgentCore Runtime: dev sets AGENTCORE_GATEWAY_<NAME>_URL on the container,
+ * and entrypoint.sh appends it to [agent.env]. Locally `box-runtime` holds the developer's AWS credentials, which
  * entrypoint.sh writes from the ones `agentcore dev` passes in, so Box signs as the developer.
  */
 export function localGatewayTables(gateways: LocalGateway[]): Table {
   for (const { region } of gateways) checkRegion(region);
-  const env: Table = {};
   for (const { envName, url } of gateways) {
     if (
       !/^[A-Z][A-Z0-9_]*$/.test(envName) ||
@@ -270,10 +270,8 @@ export function localGatewayTables(gateways: LocalGateway[]): Table {
     ) {
       throw new InvalidEnvironmentError(`unexpected Gateway variable ${envName}=${url}`);
     }
-    env[envName] = url;
   }
   return {
-    agent: { env },
     egress: {
       "agentcore-gateway": {
         // Each Gateway's own host, not a wildcard: locally Box signs as the developer, who may
