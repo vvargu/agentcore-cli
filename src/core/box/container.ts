@@ -9,7 +9,7 @@
 //   box-container/              the container profile: box/profile.toml with agentcore's tables
 //                               added (ingress, image folders, routes), box/policy.dw if any, and
 //                               box/packs/*
-//   entrypoint.sh               from src/assets/box/container
+//   entrypoint.sh, scripts/     from src/assets/box/container (scripts/ are its Python helpers)
 //   Dockerfile                  only when the agent folder has no box Dockerfile (built-in)
 //
 // POC: the binaries come from a local Linux build until released boxy binaries ship.
@@ -29,6 +29,13 @@ import { BOX_DIRECTORY } from "../project/box";
 import { defaultSource, type AssetSource } from "../project/source";
 
 export const BOX_BUILD_DIRECTORY = ".box-build";
+/** entrypoint.sh's Python helpers, which the image copies to /opt/agentcore. */
+export const ENTRYPOINT_SCRIPTS = [
+  "agent_env.py",
+  "imds_credentials.py",
+  "local_credentials.py",
+  "relay_denials.py",
+];
 const ASSET_DIRECTORY = "box/container";
 type Table = Record<string, unknown>;
 
@@ -148,6 +155,13 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
       mode: 0o755,
     },
   );
+  mkdirSync(join(context, "scripts"), { recursive: true });
+  for (const script of ENTRYPOINT_SCRIPTS) {
+    writeFileSync(
+      join(context, "scripts", script),
+      await assets.read(`${ASSET_DIRECTORY}/scripts/${script}`),
+    );
+  }
 
   // boxy, its helpers, and its packs, which Box Core and boxy find beside the running boxy.
   const boxy = join(context, "boxy");

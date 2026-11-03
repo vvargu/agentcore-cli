@@ -5,7 +5,15 @@
 #   Step 1. Uncover /proc, so Box can mount a fresh /proc for the agent's sandbox.
 #   Step 2. On AgentCore Runtime, write the AWS profile `box-runtime` from the execution role.
 #   Step 3. Start boxy: `boxy run /app/.box/profile` from the agent's folder (the workspace).
+#
+# The Python helpers are in /opt/agentcore (src/assets/box/container/scripts in agentcore-cli).
 set -u
+SCRIPTS=/opt/agentcore
+if [ ! -f "$SCRIPTS/agent_env.py" ]; then
+  echo "entrypoint: $SCRIPTS has no helper scripts. Add this line to the agent's Dockerfile, before" \
+    "ENTRYPOINT: COPY .box-build/<runtime>/scripts/ $SCRIPTS/" >&2
+  exit 1
+fi
 
 # --- Step 1: uncover /proc --------------------------------------------------------------------------
 # The container runtime covers some paths under /proc (and /sys/firmware). The kernel refuses Box's
@@ -32,45 +40,14 @@ write_credentials() {
   role=$(curl -sf -m 3 -H "X-aws-ec2-metadata-token: $token" "$IMDS/meta-data/iam/security-credentials/") || return 1
   document=$(curl -sf -m 3 -H "X-aws-ec2-metadata-token: $token" "$IMDS/meta-data/iam/security-credentials/$role") || return 1
   mkdir -p /home/box/.aws && chown box:box /home/box/.aws && chmod 0700 /home/box/.aws
-  printf '%s' "$document" | python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-sys.stdout.write("[box-runtime]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n"
-                 % (d["AccessKeyId"], d["SecretAccessKey"], d["Token"]))
-' > /home/box/.aws/credentials.tmp || return 1
+  printf '%s' "$document" | python3 "$SCRIPTS/imds_credentials.py" > /home/box/.aws/credentials.tmp || return 1
   chown box:box /home/box/.aws/credentials.tmp && chmod 0600 /home/box/.aws/credentials.tmp
   mv /home/box/.aws/credentials.tmp /home/box/.aws/credentials
   echo "entrypoint: execution role credentials written for profile box-runtime (role $role)"
 }
 local_credentials() {
   mkdir -p /home/box/.aws && chown box:box /home/box/.aws && chmod 0700 /home/box/.aws
-  python3 - /home/box/.aws/credentials.tmp <<'PY' || return 1
-import configparser, os, sys
-keys = {k: os.environ.get(k) for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")}
-source = "the environment"
-if not (keys["AWS_ACCESS_KEY_ID"] and keys["AWS_SECRET_ACCESS_KEY"]):
-    path = os.environ.get("AWS_SHARED_CREDENTIALS_FILE", "")
-    profile = os.environ.get("AWS_PROFILE", "default")
-    parser = configparser.RawConfigParser()
-    if not (path and parser.read(path) and parser.has_section(profile)):
-        sys.exit("no AWS credentials passed in")
-    section = parser[profile]
-    keys = {
-        "AWS_ACCESS_KEY_ID": section.get("aws_access_key_id"),
-        "AWS_SECRET_ACCESS_KEY": section.get("aws_secret_access_key"),
-        "AWS_SESSION_TOKEN": section.get("aws_session_token"),
-    }
-    if not (keys["AWS_ACCESS_KEY_ID"] and keys["AWS_SECRET_ACCESS_KEY"]):
-        sys.exit("profile %s has no static keys" % profile)
-    source = "profile %s" % profile
-lines = ["[box-runtime]", "aws_access_key_id = %s" % keys["AWS_ACCESS_KEY_ID"],
-         "aws_secret_access_key = %s" % keys["AWS_SECRET_ACCESS_KEY"]]
-if keys["AWS_SESSION_TOKEN"]:
-    lines.append("aws_session_token = %s" % keys["AWS_SESSION_TOKEN"])
-with open(sys.argv[1], "w") as f:
-    f.write("\n".join(lines) + "\n")
-print("entrypoint: local dev; your AWS credentials (%s) written for profile box-runtime" % source)
-PY
+  python3 "$SCRIPTS/local_credentials.py" /home/box/.aws/credentials.tmp || return 1
   chown box:box /home/box/.aws/credentials.tmp && chmod 0600 /home/box/.aws/credentials.tmp
   mv /home/box/.aws/credentials.tmp /home/box/.aws/credentials
 }
@@ -88,68 +65,14 @@ else
   echo "entrypoint: no instance metadata endpoint; using whatever AWS profile is mounted"
 fi
 
-# --- Step 2b: the runtime's settings for the agent ------------------------------------------------
-# The CDK sets these variables on AgentCore Runtime; `agentcore dev` sets the Gateway ones the same
-# way, so this step is the only one that writes them into the profile.
-# The agent sees only [agent.env], not the container's environment. Pass on the variables that name
-# the project's Gateways and Memories (AGENTCORE_GATEWAY_<NAME>_URL/_ARN/_AUTH_TYPE,
-# MEMORY_<NAME>_ID/_ARN, and the imported GATEWAY_<ID>_* forms) by appending them to [agent.env],
-# which agentcore writes as the last table of the container profile. This is an allowlist of exact
-# name shapes, not a prefix match: the container's environment also holds secrets
-# (AGENTCORE_CREDENTIAL_<NAME> from .env.local in `agentcore dev`, the env:// secrets boxy reads),
-# and none of them may reach the agent. A value must be printable ASCII without spaces (a URL, an
-# ARN, an id), so it is a safe TOML string. A name the profile already sets keeps its value.
-python3 - /app/.box/profile/profile.toml <<'PY'
-import json, os, re, sys, tomllib
-NAME = re.compile(r"(AGENTCORE_GATEWAY|AGENTCORE_MEMORY|GATEWAY|MEMORY)_[A-Z0-9_]+_(URL|ARN|ID|AUTH_TYPE)")
-VALUE = re.compile(r"[\x21-\x7e]*")
-path = sys.argv[1]
-with open(path, encoding="utf-8") as f:
-    text = f.read()
-headers = re.findall(r"^\s*\[[^\]]+\]", text, re.M)
-if not headers or headers[-1].strip() != "[agent.env]":
-    sys.exit("entrypoint: the container profile does not end with [agent.env]; passed nothing")
-have = set(tomllib.loads(text).get("agent", {}).get("env", {}))
-names = sorted(k for k, v in os.environ.items()
-               if NAME.fullmatch(k) and VALUE.fullmatch(v) and k not in have)
-with open(path, "a", encoding="utf-8") as f:
-    for k in names:
-        f.write("%s = %s\n" % (k, json.dumps(os.environ[k])))
-print("entrypoint: passed to the agent: %s" % (", ".join(names) or "nothing"))
-PY
+# --- Step 2b: the runtime's Gateway and Memory variables for the agent ----------------------------
+# The CDK sets them on AgentCore Runtime, and `agentcore dev` sets the Gateway ones the same way. The
+# agent sees only [agent.env], so agent_env.py appends the allowlisted ones to it.
+python3 "$SCRIPTS/agent_env.py" /app/.box/profile/profile.toml
 
 # --- Step 2c: relay policy denials to the log ---------------------------------------------------------
-# boxy writes the run's records to ~/.boxy/runs/<run>/records.jsonl in the container. Print each deny
-# as `[box] DENY <action> <resource> (rule <id>)`, so the runtime's CloudWatch log shows it.
-python3 -u - <<'PY' &
-import glob, json, os, time
-started = time.time()
-path = None
-while path is None:
-    found = [p for p in glob.glob("/home/box/.boxy/runs/*/records.jsonl") if os.path.getmtime(p) >= started]
-    path = max(found, key=os.path.getmtime) if found else None
-    time.sleep(0.5)
-with open(path, encoding="utf-8") as records:
-    while True:
-        line = records.readline()
-        if not line:
-            time.sleep(0.5)
-            continue
-        try:
-            request = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(request, dict):
-            continue
-        for rl in request.get("resourceLogs", []):
-            for sl in rl.get("scopeLogs", []):
-                for record in sl.get("logRecords", []):
-                    a = {x["key"]: next(iter(x["value"].values()), "") for x in record.get("attributes", []) if x.get("value")}
-                    if a.get("strands.box.policy.verdict") == "deny":
-                        rule = a.get("strands.box.policy.rule") or a.get("strands.box.policy.cause", "")
-                        print("[box] DENY %s %s (rule %s)" % (a.get("strands.box.policy.action", "?"),
-                              a.get("strands.box.policy.resource", "?"), rule), flush=True)
-PY
+# Print each deny from boxy's run records as `[box] DENY ...`, so the runtime's log shows it.
+python3 -u "$SCRIPTS/relay_denials.py" &
 
 # --- Step 3: start boxy -----------------------------------------------------------------------------
 # Box needs no root, so drop to uid 1000 first; the agent then maps to uid 1000 outside its sandbox,

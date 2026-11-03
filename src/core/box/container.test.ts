@@ -20,6 +20,7 @@ const USER_POLICY_DW = '@id("spawn_curl") permit (principal, action, resource);\
 import {
   BOXY_BINARIES,
   BOX_DOCKERIGNORE,
+  ENTRYPOINT_SCRIPTS,
   awsRouteTables,
   boxDockerfile,
   localGatewayTables,
@@ -198,6 +199,11 @@ describe("stageBoxContainer", () => {
     expect(dockerfile).toContain("COPY .box-build/agent/boxy/ /opt/boxy/");
     expect(dockerfile).not.toMatch(/\{\{\w+\}\}/);
     expect(statSync(join(dir, "entrypoint.sh")).mode & 0o111).not.toBe(0);
+    // entrypoint.sh's Python helpers, which the Dockerfile copies to /opt/agentcore.
+    for (const name of ENTRYPOINT_SCRIPTS) {
+      expect(existsSync(join(dir, "scripts", name))).toBe(true);
+    }
+    expect(dockerfile).toContain("COPY .box-build/agent/scripts/ /opt/agentcore/");
     for (const name of BOXY_BINARIES) {
       expect(existsSync(join(dir, "boxy", name))).toBe(true);
     }
@@ -356,18 +362,13 @@ describe("stageBoxContainer", () => {
 
 // entrypoint.sh appends the Gateway and Memory variables to [agent.env] with Python.
 const python = Bun.which("python3");
-describe.skipIf(!python)("entrypoint.sh's runtime variables", () => {
-  const script = readFileSync(
-    join(import.meta.dir, "../../assets/box/container/entrypoint.sh"),
-    "utf8",
-  );
-  const body = /profile\.toml <<'PY'\n([\s\S]*?)\nPY\n/.exec(script)?.[1];
+describe.skipIf(!python)("agent_env.py", () => {
+  const script = join(import.meta.dir, "../../assets/box/container/scripts/agent_env.py");
   const run = (file: string, env: Record<string, string>): void => {
-    execFileSync(python!, ["-", file], { input: body, env: { PATH: process.env.PATH ?? "", ...env } });
+    execFileSync(python!, [script, file], { env: { PATH: process.env.PATH ?? "", ...env } });
   };
 
   test("appends the Gateway and Memory identifiers to [agent.env], and no secret", () => {
-    expect(body).toBeDefined();
     const file = join(temp(), "profile.toml");
     writeFileSync(
       file,
@@ -412,5 +413,45 @@ describe.skipIf(!python)("entrypoint.sh's runtime variables", () => {
     writeFileSync(file, '[agent.env]\nA = "1"\n[egress.x]\ndestinations = ["x"]\n');
     expect(() => run(file, { MEMORY_NOTES_ID: "notes-abc123" })).toThrow();
     expect(readFileSync(file, "utf8")).not.toContain("MEMORY_NOTES_ID");
+  });
+});
+
+describe.skipIf(!python)("entrypoint.sh's other helpers", () => {
+  const scripts = join(import.meta.dir, "../../assets/box/container/scripts");
+
+  test("imds_credentials.py writes box-runtime from the role's credential document", () => {
+    const out = execFileSync(python!, [join(scripts, "imds_credentials.py")], {
+      input: JSON.stringify({ AccessKeyId: "ASIAX", SecretAccessKey: "s3cr3t", Token: "tok" }),
+    }).toString();
+    expect(out).toBe(
+      "[box-runtime]\naws_access_key_id = ASIAX\naws_secret_access_key = s3cr3t\naws_session_token = tok\n",
+    );
+  });
+
+  test("local_credentials.py takes the environment's keys, else the mounted profile's", () => {
+    const out = join(temp(), "credentials");
+    execFileSync(python!, [join(scripts, "local_credentials.py"), out], {
+      env: { PATH: process.env.PATH ?? "", AWS_ACCESS_KEY_ID: "AKIAX", AWS_SECRET_ACCESS_KEY: "s" },
+    });
+    expect(readFileSync(out, "utf8")).toBe(
+      "[box-runtime]\naws_access_key_id = AKIAX\naws_secret_access_key = s\n",
+    );
+    const mounted = join(temp(), "mounted");
+    writeFileSync(
+      mounted,
+      "[dev]\naws_access_key_id = AKIAY\naws_secret_access_key = t\naws_session_token = u\n",
+    );
+    execFileSync(python!, [join(scripts, "local_credentials.py"), out], {
+      env: { PATH: process.env.PATH ?? "", AWS_SHARED_CREDENTIALS_FILE: mounted, AWS_PROFILE: "dev" },
+    });
+    expect(readFileSync(out, "utf8")).toContain("aws_access_key_id = AKIAY\n");
+    expect(readFileSync(out, "utf8")).toContain("aws_session_token = u\n");
+  });
+
+  test("entrypoint.sh runs the helpers from /opt/agentcore, with no inline Python", () => {
+    const entrypoint = readFileSync(join(scripts, "..", "entrypoint.sh"), "utf8");
+    expect(entrypoint).not.toContain("<<'PY'");
+    expect(entrypoint).not.toContain("python3 -c");
+    for (const name of ENTRYPOINT_SCRIPTS) expect(entrypoint).toContain(`$SCRIPTS/${name}`);
   });
 });
