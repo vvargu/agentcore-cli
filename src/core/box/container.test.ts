@@ -76,7 +76,9 @@ function boxProject(profile = boxProfileToml("us-west-2")): string {
 describe("containerProfile", () => {
   test("adds the container pack and the image's Python paths to [options]", () => {
     const out = containerProfile(boxProfileToml("us-west-2"));
-    expect(out).toContain('packs = ["boxy/python", "boxy/bedrock", "agentcore-container"]');
+    expect(out).toContain(
+      'packs = ["boxy/python", "boxy/bedrock", "boxy/agentcore", "agentcore-container"]',
+    );
     expect(containerProfile('packs = ["boxy/python"]\n', ["a", "b"])).toContain(
       'packs = ["boxy/python", "a", "b"]',
     );
@@ -88,7 +90,7 @@ describe("containerProfile", () => {
 
   test("sets python.script from the runtime entrypoint unless the profile sets it", () => {
     const profile = boxProfileToml("us-west-2");
-    expect(containerProfile(profile, undefined, "main.py")).not.toContain("python.script");
+    expect(containerProfile(profile, undefined, "main.py")).not.toContain("python.script =");
     expect(containerProfile(profile, undefined, "app.py:app")).toContain(
       'python.script = "app.py"',
     );

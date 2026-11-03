@@ -36,9 +36,14 @@ export function boxProfileToml(region: string): string {
 #   boxy profile show --full ../../box   # what the box allows, without starting it
 #   boxy run ../../box                   # run the agent in the box
 #
-# boxy/python runs \`python main.py\` with box/.venv (\`agentcore create\` makes it with uv).
+# boxy/python grants the Python in box/.venv (\`agentcore create\` makes it with uv).
 # boxy/bedrock routes the model calls to Bedrock and adds AWS_BEARER_TOKEN_BEDROCK to them.
-packs = ["boxy/python", "boxy/bedrock"]
+# boxy/agentcore keeps the agent's home in storage, as AgentCore Runtime needs.
+packs = ["boxy/python", "boxy/bedrock", "boxy/agentcore"]
+
+# What runs: the venv's Python and the entry script (python.script, default main.py).
+[agent]
+command = ["\${{ inputs.python.program }}", "\${{ inputs.python.script }}"]
 
 [options]
 bedrock.region = "${region}"
