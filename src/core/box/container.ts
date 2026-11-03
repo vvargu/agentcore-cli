@@ -6,8 +6,9 @@
 //   boxy/                       boxy and its two helpers, prebuilt for Linux arm64
 //                               ($AGENTCORE_BOXY_BIN), and boxy's resources/ (packs) from
 //                               $AGENTCORE_BOXY_SOURCE
-//   box-container/              the container profile: box/profile.toml with container paths and
-//                               the agentcore-container pack, box/policy.dw if any, and box/packs/*
+//   box-container/              the container profile: box/profile.toml with agentcore's tables
+//                               added (ingress, image folders, routes), box/policy.dw if any, and
+//                               box/packs/*
 //   entrypoint.sh               from src/assets/box/container
 //   Dockerfile                  only when the agent folder has no box Dockerfile (built-in)
 //
@@ -22,21 +23,47 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { InvalidEnvironmentError } from "../../errors";
 import { BOX_DIRECTORY } from "../project/box";
 import { defaultSource, type AssetSource } from "../project/source";
 
 export const BOX_BUILD_DIRECTORY = ".box-build";
 const ASSET_DIRECTORY = "box/container";
-const CONTAINER_PACK = "agentcore-container";
-/** Written again by entrypoint.sh from the container's Gateway and Memory variables (an allowlist). */
-const RUNTIME_PACK = "agentcore-runtime";
+type Table = Record<string, unknown>;
+
 /** The image's Python (python:3.12-slim) and the venv the Dockerfile makes with uv. */
 const CONTAINER_OPTIONS = {
-  "python.venv": "/opt/agent-venv",
-  // Box refuses /usr/local as a whole (a system root); the pack grants /usr/local/bin.
-  "python.runtime": "/usr/local/lib",
+  // Box refuses /usr/local as a whole (a system root); CONTAINER_TABLES grants /usr/local/bin.
+  python: { venv: "/opt/agent-venv", runtime: "/usr/local/lib" },
 };
+
+/** The image's folders: the venv's Python links to /usr/local/bin, and Debian's shared
+ * libraries (libssl, libffi, ...) that Python's modules load. On Linux a read grant does not let
+ * Python load a .so, so each is exec as well. */
+const IMAGE_FOLDERS = ["/usr/local/bin", "/usr/lib/aarch64-linux-gnu"];
+
+/**
+ * What only the container has, added to the container's copy of the profile. Box listens on
+ * 0.0.0.0:8080 (the port `agentcore dev` publishes and AgentCore Runtime calls) and relays each
+ * connection to the agent's own port 8080. Box Core accepts ingress on Linux only, which is why it
+ * is not in box/profile.toml. A profile may set its own `[agent.ingress]` keys, which win.
+ */
+const CONTAINER_TABLES: Table = {
+  agent: {
+    ingress: { host: "0.0.0.0", port: 8080 },
+    filesystem: { read: IMAGE_FOLDERS, exec: IMAGE_FOLDERS },
+  },
+};
+
+/** The first line of the container profile, which says who wrote it. */
+const CONTAINER_PROFILE_HEADER =
+  "# Written by agentcore from box/profile.toml for the container image. Do not edit.\n";
+
+/** Above the last table. entrypoint.sh appends the runtime's Gateway and Memory variables to it. */
+const AGENT_ENV_HEADER =
+  "# The agent's environment. On AgentCore Runtime, entrypoint.sh appends the Gateway and Memory\n" +
+  "# variables here at start, so this table stays last.\n[agent.env]\n";
 
 /** Whether the project is a box project: `box/profile.toml` exists. */
 export function isBoxProject(projectRoot: string): boolean {
@@ -59,8 +86,6 @@ export type StageBoxContainerInput = {
 /** A deployed Gateway for `agentcore dev`: its env var name and URL, as the CDK sets them. */
 export type LocalGateway = { envName: string; url: string; region: string };
 
-/** Only in a local image with deployed Gateways: their URLs and the route that signs for them. */
-const LOCAL_GATEWAY_PACK = "agentcore-local-gateway";
 
 /** Where the box image builds from, relative to the project root. */
 export type BoxBuild = { context: string; dockerfile: string };
@@ -129,70 +154,76 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
   // The container profile.
   const box = join(input.projectRoot, BOX_DIRECTORY);
   const profileDir = join(context, "box-container");
-  const gateways = target.kind === "local" ? (target.gateways ?? []) : [];
-  const packs = [CONTAINER_PACK, RUNTIME_PACK, ...(gateways.length ? [LOCAL_GATEWAY_PACK] : [])];
-  for (const pack of packs) mkdirSync(join(profileDir, "packs", pack), { recursive: true });
-  const profile = containerProfile(
-    readFileSync(join(box, "profile.toml"), "utf8"),
-    packs,
-    input.runtime.entrypoint,
-  );
+  mkdirSync(profileDir, { recursive: true });
   writeFileSync(
     join(profileDir, "profile.toml"),
-    target.kind === "aws"
-      ? `${profile.trimEnd()}\n\n${awsRoutes(target.region, profile)}`
-      : profile,
+    containerProfile(readFileSync(join(box, "profile.toml"), "utf8"), {
+      entrypoint: input.runtime.entrypoint,
+      gateways: target.kind === "local" ? target.gateways : undefined,
+      awsRegion: target.kind === "aws" ? target.region : undefined,
+    }),
   );
   if (existsSync(join(box, "policy.dw")))
     cpSync(join(box, "policy.dw"), join(profileDir, "policy.dw"));
   if (existsSync(join(box, "packs")))
     cpSync(join(box, "packs"), join(profileDir, "packs"), { recursive: true });
-  writeFileSync(
-    join(profileDir, "packs", CONTAINER_PACK, "pack.toml"),
-    await assets.read(`${ASSET_DIRECTORY}/${CONTAINER_PACK}/pack.toml`),
-  );
-  writeFileSync(
-    join(profileDir, "packs", RUNTIME_PACK, "pack.toml"),
-    `[pack]\nname = "${RUNTIME_PACK}"\nversion = 1\n`,
-  );
-  if (gateways.length) {
-    writeFileSync(
-      join(profileDir, "packs", LOCAL_GATEWAY_PACK, "pack.toml"),
-      localGatewayPack(gateways),
-    );
-  }
   return { context: BOX_BUILD_CONTEXT, dockerfile };
 }
 
+/** What `containerProfile` adds to the user's profile. */
+export type ContainerProfileOptions = {
+  /** The runtime's `entrypoint` (such as `app.py:app`); its file becomes `python.script`. */
+  entrypoint?: string;
+  /** `agentcore dev`: the deployed Gateways the local agent may call. */
+  gateways?: LocalGateway[];
+  /** `agentcore deploy`: the region of the AWS routes, signed as the Runtime role. */
+  awsRegion?: string;
+};
+
 /**
- * The user's profile for the container: agentcore's packs after the project's packs, and the
- * image's Python paths in [options]. String edits keep the user's comments.
+ * The container's copy of box/profile.toml: the user's profile with agentcore's tables added,
+ * written as one file with no packs of agentcore's own. The user's keys win, except the image's
+ * Python paths in [options]. Lists, such as the filesystem grants, are joined. The user's comments
+ * are not kept; box/profile.toml is unchanged. `[agent.env]` is written last, for entrypoint.sh.
  */
-export function containerProfile(
-  profile: string,
-  packs: string[] = [CONTAINER_PACK],
-  entrypoint?: string,
-): string {
-  const added = packs.map((pack) => `"${pack}"`).join(", ");
-  let out = profile.replace(/^packs\s*=\s*\[([^\]]*)\]/m, (_line, list: string) => {
-    const items = list.trim().replace(/,\s*$/, "");
-    return `packs = [${items ? `${items}, ` : ""}${added}]`;
-  });
-  if (out === profile) out = `packs = [${added}]\n${out}`;
-  const options: Record<string, string> = { ...CONTAINER_OPTIONS };
-  // The runtime's entry file, unless the user's profile names one itself.
-  const script = entrypoint?.split(":")[0];
-  if (script && script !== "main.py" && !/^\s*python\.script\s*=/m.test(profile)) {
-    options["python.script"] = script;
+export function containerProfile(profile: string, options: ContainerProfileOptions = {}): string {
+  let table: Table;
+  try {
+    table = parseToml(profile) as Table;
+  } catch (error) {
+    throw new InvalidEnvironmentError(`box/profile.toml is not valid TOML: ${String(error)}`);
   }
-  const lines = Object.entries(options).map(([key, value]) => `${key} = "${value}"`);
-  const header = /^\[options\]\s*$/m;
-  return header.test(out)
-    ? out.replace(
-        header,
-        `[options]\n# Set by agentcore for the container image.\n${lines.join("\n")}`,
-      )
-    : `${out.trimEnd()}\n\n[options]\n${lines.join("\n")}\n`;
+  if (options.awsRegion !== undefined) refuseDeployRoutes(table);
+  merge(table, CONTAINER_TABLES, false);
+  merge(table, { options: CONTAINER_OPTIONS }, true);
+  // The runtime's entry file, unless the user's profile names one itself.
+  const script = options.entrypoint?.split(":")[0];
+  if (script && script !== "main.py") merge(table, { options: { python: { script } } }, false);
+  if (options.gateways?.length) merge(table, localGatewayTables(options.gateways), false);
+  if (options.awsRegion !== undefined) merge(table, awsRouteTables(options.awsRegion), true);
+
+  const agent = (table.agent ?? {}) as Table;
+  const env = (agent.env ?? {}) as Table;
+  delete agent.env;
+  table.agent = agent;
+  const envText = Object.keys(env).length ? stringifyToml(env).trimEnd() + "\n" : "";
+  return `${CONTAINER_PROFILE_HEADER}\n${stringifyToml(table).trimEnd()}\n\n${AGENT_ENV_HEADER}${envText}`;
+}
+
+/** Merge `source` into `target`: tables merge, lists join without repeats, and for a key both set,
+ * `source` wins when `sourceWins`, else `target` keeps its value. */
+function merge(target: Table, source: Table, sourceWins: boolean): void {
+  for (const [key, value] of Object.entries(source)) {
+    const current = target[key];
+    if (isTable(current) && isTable(value)) merge(current, value, sourceWins);
+    else if (Array.isArray(current) && Array.isArray(value))
+      target[key] = [...current, ...value.filter((item) => !current.includes(item))];
+    else if (current === undefined || sourceWins) target[key] = structuredClone(value);
+  }
+}
+
+function isTable(value: unknown): value is Table {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** The names of the env:// secrets in the profile and the project's own packs. */
@@ -214,80 +245,82 @@ export function boxSecretNames(projectRoot: string): string[] {
 }
 
 /**
- * The local image's Gateway pack: each deployed Gateway's URL for the agent, and the same Gateway
+ * The local image's Gateway tables: each deployed Gateway's URL for the agent, and the same Gateway
  * route as on AgentCore Runtime. Locally `box-runtime` holds the developer's AWS credentials, which
  * entrypoint.sh writes from the ones `agentcore dev` passes in, so Box signs as the developer.
  */
-export function localGatewayPack(gateways: LocalGateway[]): string {
+export function localGatewayTables(gateways: LocalGateway[]): Table {
   const regions = [...new Set(gateways.map((gateway) => gateway.region))];
-  for (const region of regions) {
-    if (!/^[a-z]{2}(-[a-z]+)+-\d+$/.test(region)) {
-      throw new InvalidEnvironmentError(`"${region}" is not an AWS region for the box profile.`);
-    }
-  }
-  const env = gateways.map(({ envName, url }) => {
+  for (const region of regions) checkRegion(region);
+  const env: Table = {};
+  for (const { envName, url } of gateways) {
     if (
       !/^[A-Z][A-Z0-9_]*$/.test(envName) ||
       !/^https:\/\/[a-z0-9.-]+(\/[A-Za-z0-9/_-]*)?$/.test(url)
     ) {
       throw new InvalidEnvironmentError(`unexpected Gateway variable ${envName}=${url}`);
     }
-    return `${envName} = "${url}"`;
-  });
-  return `# Written by agentcore dev: the project's deployed Gateways, for the local agent.
-[pack]
-name = "${LOCAL_GATEWAY_PACK}"
-version = 1
-
-[agent.env]
-${env.join("\n")}
-
-# Signed with your AWS credentials (entrypoint.sh writes them to the profile box-runtime).
-[egress.agentcore-gateway]
-destinations = [${regions.map((region) => `"*.gateway.bedrock-agentcore.${region}.amazonaws.com"`).join(", ")}]
-secret.ref = "aws://box-runtime"
-`;
+    env[envName] = url;
+  }
+  return {
+    agent: { env },
+    egress: {
+      "agentcore-gateway": {
+        destinations: regions.map((region) => `*.gateway.bedrock-agentcore.${region}.amazonaws.com`),
+        secret: { ref: "aws://box-runtime" },
+      },
+    },
+  };
 }
 
-/** The routes {@link awsRoutes} declares. */
-const AWS_ROUTES = ["bedrock", "agentcore-gateway", "agentcore-data"];
-
-/**
- * The deployed profile's routes, after the user's profile (a profile may change a pack's route; two
- * packs may not declare one). AgentCore Runtime gives the container the runtime role's credentials
- * (entrypoint.sh writes them to the AWS profile box-runtime), so Box signs the model, Gateway, and
- * AgentCore data-plane calls (memory) with SigV4 as that role. The agent holds no AWS credential.
- * A Gateway target holds its own outbound credential (AgentCore Identity), so the box needs none.
- */
-export function awsRoutes(region: string, profile = ""): string {
-  // The region goes into TOML and host names, so it must look like one.
+function checkRegion(region: string): void {
+  // The region goes into host names, so it must look like one.
   if (!/^[a-z]{2}(-[a-z]+)+-\d+$/.test(region)) {
     throw new InvalidEnvironmentError(`"${region}" is not an AWS region for the box profile.`);
   }
-  // TOML refuses a table declared twice, and boxy would only say so in the container at startup.
+}
+
+/** The routes {@link awsRouteTables} declares. */
+const AWS_ROUTES = ["bedrock", "agentcore-gateway", "agentcore-data"];
+
+/** A user's profile may not declare a route that deploy sets for AgentCore Runtime. */
+function refuseDeployRoutes(table: Table): void {
+  const egress = (table.egress ?? {}) as Table;
   for (const route of AWS_ROUTES) {
-    if (new RegExp(`^\\s*\\[egress\\.${route}[.\\]]`, "m").test(profile)) {
+    if (route in egress) {
       throw new InvalidEnvironmentError(
         `box/profile.toml declares [egress.${route}], which agentcore deploy sets for AgentCore ` +
           `Runtime (signed with the runtime role). Remove it from box/profile.toml to deploy.`,
       );
     }
   }
-  return `# --- Written by agentcore deploy for AgentCore Runtime ---
-# The model: the role signs, instead of the Bedrock API key (env://AWS_BEARER_TOKEN_BEDROCK) locally.
-[egress.bedrock]
-secret.ref = "aws://box-runtime"
+}
 
-# Each AgentCore Gateway of the project (AGENTCORE_GATEWAY_<NAME>_URL).
-[egress.agentcore-gateway]
-destinations = ["*.gateway.bedrock-agentcore.${region}.amazonaws.com"]
-secret.ref = "aws://box-runtime"
-
-# The AgentCore data plane, such as Memory (MEMORY_<NAME>_ID).
-[egress.agentcore-data]
-destinations = ["bedrock-agentcore.${region}.amazonaws.com"]
-secret.ref = "aws://box-runtime"
-`;
+/**
+ * The deployed profile's routes. AgentCore Runtime gives the container the runtime role's
+ * credentials (entrypoint.sh writes them to the AWS profile box-runtime), so Box signs the model,
+ * Gateway, and AgentCore data-plane calls (memory) with SigV4 as that role. The agent holds no AWS
+ * credential. A Gateway target holds its own outbound credential (AgentCore Identity).
+ */
+export function awsRouteTables(region: string): Table {
+  checkRegion(region);
+  const signed = { ref: "aws://box-runtime" };
+  return {
+    egress: {
+      // The model: the role signs, instead of the Bedrock API key used locally.
+      bedrock: { secret: signed },
+      // Each AgentCore Gateway of the project (AGENTCORE_GATEWAY_<NAME>_URL).
+      "agentcore-gateway": {
+        destinations: [`*.gateway.bedrock-agentcore.${region}.amazonaws.com`],
+        secret: signed,
+      },
+      // The AgentCore data plane, such as Memory (MEMORY_<NAME>_ID).
+      "agentcore-data": {
+        destinations: [`bedrock-agentcore.${region}.amazonaws.com`],
+        secret: signed,
+      },
+    },
+  };
 }
 
 /** The built-in box image Dockerfile for an agent in `codeLocation` (such as `app/agent`). */
