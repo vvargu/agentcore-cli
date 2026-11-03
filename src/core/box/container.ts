@@ -78,7 +78,14 @@ export type StageBoxContainerInput = {
    * `aws` for AgentCore Runtime (deploy). `local` for `agentcore dev`; `gateways` are the deployed
    * Gateways the local agent may call, signed with the developer's own AWS credentials.
    */
-  target?: { kind: "local"; gateways?: LocalGateway[] } | { kind: "aws"; region: string };
+  target?:
+    | { kind: "local"; gateways?: LocalGateway[] }
+    | {
+        kind: "aws";
+        region: string;
+        /** The deployed Gateways' hosts, when every Gateway is deployed; else any in the region. */
+        gatewayHosts?: string[];
+      };
   env?: NodeJS.ProcessEnv;
   assets?: AssetSource;
 };
@@ -161,6 +168,7 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
       entrypoint: input.runtime.entrypoint,
       gateways: target.kind === "local" ? target.gateways : undefined,
       awsRegion: target.kind === "aws" ? target.region : undefined,
+      awsGatewayHosts: target.kind === "aws" ? target.gatewayHosts : undefined,
     }),
   );
   if (existsSync(join(box, "policy.dw")))
@@ -178,6 +186,8 @@ export type ContainerProfileOptions = {
   gateways?: LocalGateway[];
   /** `agentcore deploy`: the region of the AWS routes, signed as the Runtime role. */
   awsRegion?: string;
+  /** `agentcore deploy`: the project's deployed Gateway hosts, instead of any in the region. */
+  awsGatewayHosts?: string[];
 };
 
 /**
@@ -200,7 +210,8 @@ export function containerProfile(profile: string, options: ContainerProfileOptio
   const script = options.entrypoint?.split(":")[0];
   if (script && script !== "main.py") merge(table, { options: { python: { script } } }, false);
   if (options.gateways?.length) merge(table, localGatewayTables(options.gateways), false);
-  if (options.awsRegion !== undefined) merge(table, awsRouteTables(options.awsRegion), true);
+  if (options.awsRegion !== undefined)
+    merge(table, awsRouteTables(options.awsRegion, options.awsGatewayHosts), true);
 
   const agent = (table.agent ?? {}) as Table;
   const env = (agent.env ?? {}) as Table;
@@ -303,16 +314,23 @@ function refuseDeployRoutes(table: Table): void {
  * Gateway, and AgentCore data-plane calls (memory) with SigV4 as that role. The agent holds no AWS
  * credential. A Gateway target holds its own outbound credential (AgentCore Identity).
  */
-export function awsRouteTables(region: string): Table {
+export function awsRouteTables(region: string, gatewayHosts?: string[]): Table {
   checkRegion(region);
+  const suffix = `.gateway.bedrock-agentcore.${region}.amazonaws.com`;
+  for (const host of gatewayHosts ?? []) {
+    if (!/^[a-z0-9-]+$/.test(host.slice(0, -suffix.length)) || !host.endsWith(suffix)) {
+      throw new InvalidEnvironmentError(`"${host}" is not an AgentCore Gateway host in ${region}.`);
+    }
+  }
   const signed = { ref: "aws://box-runtime" };
   return {
     egress: {
       // The model: the role signs, instead of the Bedrock API key used locally.
       bedrock: { secret: signed },
-      // Each AgentCore Gateway of the project (AGENTCORE_GATEWAY_<NAME>_URL).
+      // Each AgentCore Gateway of the project (AGENTCORE_GATEWAY_<NAME>_URL): their own hosts
+      // once deployed, else any in the region (the host's id does not exist before the deploy).
       "agentcore-gateway": {
-        destinations: [`*.gateway.bedrock-agentcore.${region}.amazonaws.com`],
+        destinations: gatewayHosts?.length ? gatewayHosts : [`*${suffix}`],
         secret: signed,
       },
       // The AgentCore data plane, such as Memory (MEMORY_<NAME>_ID).

@@ -1564,20 +1564,7 @@ export class FsProjectManager implements ProjectManager {
   ): Promise<LocalGateway[]> {
     if (input.purpose !== "dev" || project.spec.agentCoreGateways.length === 0) return [];
     try {
-      const { resources, target } = await this.resolveDeployedResources(project, {
-        target: DEFAULT_TARGET_NAME,
-      });
-      const gateways = resources
-        .filter((resource) => resource.resourceType === "gateway")
-        .map((gateway) => ({
-          envName: `AGENTCORE_GATEWAY_${gateway.name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_URL`,
-          url: `https://${gateway.id}.gateway.bedrock-agentcore.${target.region}.amazonaws.com`,
-          region: target.region,
-        }));
-      for (const gateway of gateways) {
-        messages.push(`box project: local agent calls the deployed Gateway ${gateway.envName}`);
-      }
-      return gateways;
+      return await this.deployedGateways(project, DEFAULT_TARGET_NAME, messages);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       messages.push(
@@ -1586,6 +1573,58 @@ export class FsProjectManager implements ProjectManager {
       );
       return [];
     }
+  }
+
+  /**
+   * For `agentcore deploy` on a box project: the hosts of the project's Gateways when every one is
+   * already deployed on `targetName`, so the Gateway route names exactly them. Undefined on a first
+   * deploy, or when a Gateway is new, because its host (`<name>-<random id>`) does not exist yet;
+   * the route then allows any Gateway in the region, and the Runtime role's IAM decides.
+   */
+  private async deployGatewayHosts(
+    project: Project,
+    targetName: string,
+    messages: string[],
+  ): Promise<string[] | undefined> {
+    if (project.spec.agentCoreGateways.length === 0) return undefined;
+    let gateways: LocalGateway[];
+    try {
+      gateways = await this.deployedGateways(project, targetName, []);
+    } catch {
+      gateways = [];
+    }
+    if (gateways.length < project.spec.agentCoreGateways.length) {
+      messages.push(
+        "box project: the Gateway route allows any Gateway in the region until every Gateway is " +
+          "deployed; deploy again to limit it to the project's own Gateways",
+      );
+      return undefined;
+    }
+    const hosts = gateways.map((gateway) => new URL(gateway.url).host);
+    messages.push(`box project: the Gateway route allows only ${hosts.join(", ")}`);
+    return hosts;
+  }
+
+  /** The project's Gateways deployed on `targetName`: their URL variable, URL, and region. */
+  private async deployedGateways(
+    project: Project,
+    targetName: string,
+    messages: string[],
+  ): Promise<LocalGateway[]> {
+    const { resources, target } = await this.resolveDeployedResources(project, {
+      target: targetName,
+    });
+    const gateways = resources
+      .filter((resource) => resource.resourceType === "gateway")
+      .map((gateway) => ({
+        envName: `AGENTCORE_GATEWAY_${gateway.name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_URL`,
+        url: `https://${gateway.id}.gateway.bedrock-agentcore.${target.region}.amazonaws.com`,
+        region: target.region,
+      }));
+    for (const gateway of gateways) {
+      messages.push(`box project: local agent calls the deployed Gateway ${gateway.envName}`);
+    }
+    return gateways;
   }
 
   /**
@@ -1604,7 +1643,15 @@ export class FsProjectManager implements ProjectManager {
         ? (input.region ?? (await this.listTargets(project))[0]?.region ?? process.env.AWS_REGION)
         : undefined;
     const target = region
-      ? { kind: "aws" as const, region }
+      ? {
+          kind: "aws" as const,
+          region,
+          gatewayHosts: await this.deployGatewayHosts(
+            project,
+            input.target ?? DEFAULT_TARGET_NAME,
+            messages,
+          ),
+        }
       : { kind: "local" as const, gateways: await this.localGateways(project, input, messages) };
     if (input.purpose === "deploy" && !region) {
       messages.push(
@@ -1712,6 +1759,7 @@ export class FsProjectManager implements ProjectManager {
     const synced = await this.syncRuntimeBuilds(project, {
       purpose: "deploy",
       region: target.region,
+      target: target.name,
     });
     for (const message of synced.messages) yield { type: "step", message };
     project = synced.project;

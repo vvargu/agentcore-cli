@@ -3203,6 +3203,40 @@ describe("docs-only runtimes", () => {
       );
       expect(profile).toMatch(/\[egress\.bedrock\.secret\]\nref = "aws:\/\/box-runtime"/);
       expect(profile).toContain('"*.gateway.bedrock-agentcore.us-west-2.amazonaws.com"');
+
+      // Once every Gateway is deployed, the deployed profile names their hosts, not a wildcard.
+      const withGateway = (await subject.resolve({ filePath: appDir }))!;
+      // biome-ignore lint/suspicious/noExplicitAny: a minimal Gateway entry for the lookup
+      (withGateway.spec as any).agentCoreGateways = [{ name: "tools", targets: [] }];
+      const deployed = {
+        resources: [{ resourceType: "gateway", name: "tools", id: "demo-tools-4tz0r9jcyl" }],
+        target: { name: "default", region: "us-west-2" },
+      };
+      // biome-ignore lint/suspicious/noExplicitAny: the deploy record the lookup reads
+      (subject as any).resolveDeployedResources = async () => deployed;
+      const again = await subject.syncRuntimeBuilds(withGateway, {
+        purpose: "deploy",
+        region: "us-west-2",
+        target: "default",
+      });
+      const host = "demo-tools-4tz0r9jcyl.gateway.bedrock-agentcore.us-west-2.amazonaws.com";
+      expect(again.messages).toContain(`box project: the Gateway route allows only ${host}`);
+      const exact = await readFile(
+        join(project.rootPath, ".box-build", "search", "box-container", "profile.toml"),
+        "utf-8",
+      );
+      expect(exact).toContain(`destinations = [ "${host}" ]`);
+      expect(exact).not.toContain("*.gateway");
+
+      // A second Gateway that is not deployed yet: back to any Gateway in the region.
+      // biome-ignore lint/suspicious/noExplicitAny: as above
+      (withGateway.spec as any).agentCoreGateways.push({ name: "more", targets: [] });
+      const added = await subject.syncRuntimeBuilds(withGateway, {
+        purpose: "deploy",
+        region: "us-west-2",
+        target: "default",
+      });
+      expect(added.messages.some((m) => m.includes("allows any Gateway in the region"))).toBe(true);
     } finally {
       process.env.AGENTCORE_BOXY_BIN = saved[0];
       process.env.AGENTCORE_BOXY_SOURCE = saved[1];
