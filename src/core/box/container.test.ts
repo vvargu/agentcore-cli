@@ -139,7 +139,7 @@ describe("containerProfile", () => {
     expect(t.egress["agentcore-gateway"].destinations).toEqual([
       "*.gateway.bedrock-agentcore.eu-west-1.amazonaws.com",
     ]);
-    expect(t.egress["agentcore-data"].destinations).toEqual([
+    expect(t.egress["agentcore-memory"].destinations).toEqual([
       "bedrock-agentcore.eu-west-1.amazonaws.com",
     ]);
     expect(() =>
@@ -281,7 +281,7 @@ describe("stageBoxContainer", () => {
     expect(profile.egress["agentcore-gateway"].destinations).toEqual([
       "*.gateway.bedrock-agentcore.eu-west-1.amazonaws.com",
     ]);
-    expect(profile.egress["agentcore-data"].destinations).toEqual([
+    expect(profile.egress["agentcore-memory"].destinations).toEqual([
       "bedrock-agentcore.eu-west-1.amazonaws.com",
     ]);
   });
@@ -406,6 +406,34 @@ describe.skipIf(!python)("agent_env.py", () => {
     });
     expect(text).not.toContain("secret\"");
     expect(t.egress.bedrock.secret.ref).toBe("aws://box-runtime");
+  });
+
+  test("narrows the deployed Gateway route from * to the hosts of the Gateway URLs", () => {
+    const file = join(temp(), "profile.toml");
+    writeFileSync(
+      file,
+      containerProfile('packs = ["boxy/python"]\n[agent]\ncommand = ["x"]\n', {
+        awsRegion: "us-west-2",
+      }),
+    );
+    const host = "demo-tools-4tz0r9jcyl.gateway.bedrock-agentcore.us-west-2.amazonaws.com";
+    run(file, {
+      AGENTCORE_GATEWAY_TOOLS_URL: `https://${host}`,
+      // Not a Gateway host in the route's region, so not allowed.
+      AGENTCORE_GATEWAY_OTHER_URL: "https://evil.example.com",
+    });
+    const t = toml(readFileSync(file, "utf8"));
+    expect(t.egress["agentcore-gateway"].destinations).toEqual([host]);
+    expect(t.egress["agentcore-gateway"].secret.ref).toBe("aws://box-runtime");
+    expect(t.agent.env.AGENTCORE_GATEWAY_TOOLS_URL).toBe(`https://${host}`);
+
+    // With no Gateway URL the route stays as deployed.
+    const bare = join(temp(), "profile.toml");
+    writeFileSync(bare, containerProfile('[agent]\ncommand = ["x"]\n', { awsRegion: "us-west-2" }));
+    run(bare, {});
+    expect(toml(readFileSync(bare, "utf8")).egress["agentcore-gateway"].destinations).toEqual([
+      "*.gateway.bedrock-agentcore.us-west-2.amazonaws.com",
+    ]);
   });
 
   test("passes nothing when [agent.env] is not the last table", () => {

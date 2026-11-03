@@ -305,7 +305,7 @@ function checkRegion(region: string): void {
 }
 
 /** The routes {@link awsRouteTables} declares. */
-const AWS_ROUTES = ["bedrock", "agentcore-gateway", "agentcore-data"];
+const AWS_ROUTES = ["bedrock", "agentcore-gateway", "agentcore-memory"];
 
 /** A user's profile may not declare a route that deploy sets for AgentCore Runtime. */
 function refuseDeployRoutes(table: Table): void {
@@ -339,14 +339,15 @@ export function awsRouteTables(region: string, gatewayHosts?: string[]): Table {
     egress: {
       // The model: the role signs, instead of the Bedrock API key used locally.
       bedrock: { secret: signed },
-      // Each AgentCore Gateway of the project (AGENTCORE_GATEWAY_<NAME>_URL): their own hosts
-      // once deployed, else any in the region (the host's id does not exist before the deploy).
+      // Each AgentCore Gateway of the project (AGENTCORE_GATEWAY_<NAME>_URL): their own hosts once
+      // deployed, else any in the region, because the host's id does not exist before the deploy.
+      // At start, entrypoint.sh (agent_env.py) narrows `*` to the hosts of the Gateway URLs.
       "agentcore-gateway": {
         destinations: gatewayHosts?.length ? gatewayHosts : [`*${suffix}`],
         secret: signed,
       },
-      // The AgentCore data plane, such as Memory (MEMORY_<NAME>_ID).
-      "agentcore-data": {
+      // AgentCore Memory (MEMORY_<NAME>_ID), on the AgentCore data-plane host.
+      "agentcore-memory": {
         destinations: [`bedrock-agentcore.${region}.amazonaws.com`],
         secret: signed,
       },
