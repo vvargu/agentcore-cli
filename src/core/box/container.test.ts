@@ -282,7 +282,7 @@ describe("stageBoxContainer", () => {
     const profile = toml(readFileSync(join(profileDir, "profile.toml"), "utf8"));
     expect(profile.agent.env.AGENTCORE_GATEWAY_TOOLS_URL).toBe(url);
     expect(profile.egress["agentcore-gateway"]).toEqual({
-      destinations: ["*.gateway.bedrock-agentcore.us-west-2.amazonaws.com"],
+      destinations: ["demo-tools-4tz0r9jcyl.gateway.bedrock-agentcore.us-west-2.amazonaws.com"],
       secret: { ref: "aws://box-runtime" },
     });
     // box/profile.toml is unchanged.
