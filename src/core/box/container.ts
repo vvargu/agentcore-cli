@@ -6,9 +6,11 @@
 //   boxy/                       boxy and its two helpers, prebuilt for Linux arm64
 //                               ($AGENTCORE_BOXY_BIN), and boxy's resources/ (packs) from
 //                               $AGENTCORE_BOXY_SOURCE
-//   box-container/              the container profile: box/profile.toml with agentcore's tables
-//                               added (ingress, image folders, routes), box/policy.dw if any, and
-//                               box/packs/*
+//   box-container/              the local container profile (`agentcore dev` writes it):
+//                               box/profile.toml with agentcore's tables added, box/policy.dw if
+//                               any, and box/packs/*
+//   box-container-aws/          the same for AgentCore Runtime (`agentcore deploy` writes it). The
+//                               Dockerfile copies one of the two, by the build argument BOX_PROFILE.
 //   entrypoint.sh, scripts/     from src/assets/box/container (scripts/ are its Python helpers)
 //   Dockerfile                  only when the agent folder has no box Dockerfile (built-in)
 //
@@ -29,6 +31,11 @@ import { BOX_DIRECTORY } from "../project/box";
 import { defaultSource, type AssetSource } from "../project/source";
 
 export const BOX_BUILD_DIRECTORY = ".box-build";
+/** The Dockerfile's build argument that names the profile folder the image copies. */
+export const BOX_PROFILE_ARG = "BOX_PROFILE";
+/** The profile folders in `.box-build/<runtime>/`: dev's, and deploy's (the Dockerfile default). */
+export const LOCAL_PROFILE_DIRECTORY = "box-container";
+export const AWS_PROFILE_DIRECTORY = "box-container-aws";
 /** entrypoint.sh's Python helpers, which the image copies to /opt/agentcore. */
 export const ENTRYPOINT_SCRIPTS = [
   "agent_env.py",
@@ -133,14 +140,16 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
   const codeLocation = input.runtime.codeLocation.replace(/\/+$/, "");
   const relativeContext = join(BOX_BUILD_DIRECTORY, input.runtime.name);
   const context = join(input.projectRoot, relativeContext);
-  rmSync(context, { recursive: true, force: true });
+  // dev and deploy each write only their own profile folder; the rest is the same for both.
   mkdirSync(context, { recursive: true });
 
   // The Dockerfile: the user's {codeLocation}/Dockerfile when it builds a box image (it copies the
   // staged boxy in), else the built-in one. A Dockerfile from a non-box template is not a box image.
   const userDockerfile = join(codeLocation, "Dockerfile");
   let dockerfile = userDockerfile;
-  if (!isBoxDockerfile(join(input.projectRoot, userDockerfile))) {
+  if (isBoxDockerfile(join(input.projectRoot, userDockerfile))) {
+    checkBoxDockerfile(join(input.projectRoot, userDockerfile), input.runtime.name);
+  } else {
     dockerfile = join(relativeContext, "Dockerfile");
     writeFileSync(
       join(input.projectRoot, dockerfile),
@@ -155,6 +164,7 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
       mode: 0o755,
     },
   );
+  rmSync(join(context, "scripts"), { recursive: true, force: true });
   mkdirSync(join(context, "scripts"), { recursive: true });
   for (const script of ENTRYPOINT_SCRIPTS) {
     writeFileSync(
@@ -165,6 +175,7 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
 
   // boxy, its helpers, and its packs, which Box Core and boxy find beside the running boxy.
   const boxy = join(context, "boxy");
+  rmSync(boxy, { recursive: true, force: true });
   mkdirSync(boxy, { recursive: true });
   const bin = binaryFolder(env);
   for (const name of BOXY_BINARIES) {
@@ -172,9 +183,13 @@ export async function stageBoxContainer(input: StageBoxContainerInput): Promise<
   }
   cpSync(join(resourcesFolder(env), "resources"), join(boxy, "resources"), { recursive: true });
 
-  // The container profile.
+  // The container profile: dev's folder or deploy's, never both.
   const box = join(input.projectRoot, BOX_DIRECTORY);
-  const profileDir = join(context, "box-container");
+  const profileDir = join(
+    context,
+    target.kind === "aws" ? AWS_PROFILE_DIRECTORY : LOCAL_PROFILE_DIRECTORY,
+  );
+  rmSync(profileDir, { recursive: true, force: true });
   mkdirSync(profileDir, { recursive: true });
   writeFileSync(
     join(profileDir, "profile.toml"),
@@ -370,6 +385,31 @@ export async function boxDockerfile(
 /** Whether the file is a box image Dockerfile: it copies the staged boxy in. */
 function isBoxDockerfile(path: string): boolean {
   return existsSync(path) && readFileSync(path, "utf8").includes("COPY .box-build/");
+}
+
+/**
+ * Refuse a box Dockerfile from an older `agentcore create` that lacks a line the image now needs,
+ * and name the lines. Without them the image would start without its helper scripts, or a deploy
+ * would ship the local profile.
+ */
+function checkBoxDockerfile(path: string, runtimeName: string): void {
+  const text = readFileSync(path, "utf8");
+  const missing: string[] = [];
+  if (!text.includes(`\${${BOX_PROFILE_ARG}}`)) {
+    missing.push(
+      `ARG ${BOX_PROFILE_ARG}=${AWS_PROFILE_DIRECTORY}`,
+      `COPY .box-build/${runtimeName}/\${${BOX_PROFILE_ARG}}/ /app/.box/profile/   (in place of the box-container line)`,
+    );
+  }
+  if (!text.includes(`.box-build/${runtimeName}/scripts/`)) {
+    missing.push(`COPY .box-build/${runtimeName}/scripts/ /opt/agentcore/`);
+  }
+  if (missing.length) {
+    throw new InvalidEnvironmentError(
+      `${path} is from an older agentcore create. Add these lines before ENTRYPOINT:\n  ` +
+        missing.join("\n  "),
+    );
+  }
 }
 
 /** Writes the root .dockerignore, unless the user has one of their own there. */

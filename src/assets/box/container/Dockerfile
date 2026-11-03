@@ -8,8 +8,9 @@
 # with what comes from outside the project:
 #   boxy/                  boxy and its helpers, prebuilt for Linux arm64 (AGENTCORE_BOXY_BIN),
 #                          and boxy's resources/ (AGENTCORE_BOXY_SOURCE)
-#   box-container/         the container profile: box/profile.toml with agentcore's tables added
-#                          (ingress, image folders, routes), and box/policy.dw if you wrote one
+#   box-container/         the local container profile (agentcore dev), and box-container-aws/ the
+#                          one for AgentCore Runtime (agentcore deploy). BOX_PROFILE picks one:
+#                          deploy builds with the default, and dev passes BOX_PROFILE=box-container.
 #   entrypoint.sh          prepares the container and starts boxy
 #   scripts/               entrypoint.sh's Python helpers, in /opt/agentcore
 #
@@ -47,7 +48,8 @@ RUN chmod 0755 /opt/boxy/boxy /opt/boxy/strands-box-sock-alias /opt/boxy/strands
 # The project: the agent's code (the workspace, which the agent may write) and the container
 # profile in /app/.box/profile, outside the workspace.
 COPY {{codeLocation}}/ /app/{{codeLocation}}/
-COPY .box-build/{{runtimeName}}/box-container/ /app/.box/profile/
+ARG BOX_PROFILE=box-container-aws
+COPY .box-build/{{runtimeName}}/${BOX_PROFILE}/ /app/.box/profile/
 COPY .box-build/{{runtimeName}}/entrypoint.sh /entrypoint.sh
 COPY .box-build/{{runtimeName}}/scripts/ /opt/agentcore/
 RUN chown -R box:box /app/{{codeLocation}} && chmod 0755 /entrypoint.sh

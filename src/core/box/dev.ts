@@ -10,8 +10,7 @@ import {
   BOX_BUILD_DIRECTORY,
   boxSecretNames,
   isBoxProject,
-  stageBoxContainer,
-} from "./container";
+  stageBoxContainer, BOX_PROFILE_ARG, LOCAL_PROFILE_DIRECTORY } from "./container";
 
 /** Box Core makes user namespaces and mounts a fresh /proc for the agent's sandbox. */
 export const BOX_RUN_ARGS = [
@@ -58,7 +57,7 @@ export class BoxDevRunner implements DevRunner {
     if (
       build.context !== BOX_BUILD_CONTEXT ||
       !build.dockerfile ||
-      !existsSync(join(input.projectRoot, BOX_BUILD_DIRECTORY, input.runtime.name, "box-container"))
+      !existsSync(join(input.projectRoot, BOX_BUILD_DIRECTORY, input.runtime.name, LOCAL_PROFILE_DIRECTORY))
     ) {
       yield { type: "status", message: "Box project: staging the box image" };
       build = await this.stage({ projectRoot: input.projectRoot, runtime: input.runtime });
@@ -84,6 +83,11 @@ export class BoxDevRunner implements DevRunner {
         build: "Container",
         buildContextPath: build.context,
         dockerfile: build.dockerfile,
+        // The local profile; the Dockerfile's default is deploy's.
+        customDockerBuildArgs: {
+          ...input.runtime.customDockerBuildArgs,
+          [BOX_PROFILE_ARG]: LOCAL_PROFILE_DIRECTORY,
+        },
       } as DevServerInput["runtime"],
     });
   }

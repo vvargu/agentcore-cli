@@ -3198,7 +3198,7 @@ describe("docs-only runtimes", () => {
       });
       expect(onDisk.runtimeVersion).toBeUndefined();
       const profile = await readFile(
-        join(project.rootPath, ".box-build", "search", "box-container", "profile.toml"),
+        join(project.rootPath, ".box-build", "search", "box-container-aws", "profile.toml"),
         "utf-8",
       );
       expect(profile).toMatch(/\[egress\.bedrock\.secret\]\nref = "aws:\/\/box-runtime"/);
@@ -3222,7 +3222,7 @@ describe("docs-only runtimes", () => {
       const host = "demo-tools-4tz0r9jcyl.gateway.bedrock-agentcore.us-west-2.amazonaws.com";
       expect(again.messages).toContain(`box project: the Gateway route allows only ${host}`);
       const exact = await readFile(
-        join(project.rootPath, ".box-build", "search", "box-container", "profile.toml"),
+        join(project.rootPath, ".box-build", "search", "box-container-aws", "profile.toml"),
         "utf-8",
       );
       expect(exact).toContain(`destinations = [ "${host}" ]`);

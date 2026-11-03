@@ -1678,7 +1678,8 @@ export class FsProjectManager implements ProjectManager {
         target,
       });
       messages.push(
-        `runtime "${runtime.name}": box image staged in .box-build/${runtime.name}/ (${target.kind})`,
+        `runtime "${runtime.name}": box profile staged in .box-build/${runtime.name}/` +
+          `${target.kind === "aws" ? "box-container-aws" : "box-container"}/ (${target.kind})`,
       );
       const index = rawRuntimes.findIndex(
         (entry) => (entry as { name?: unknown } | null)?.name === runtime.name,
