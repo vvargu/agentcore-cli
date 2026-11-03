@@ -245,13 +245,12 @@ export function boxSecretNames(projectRoot: string): string[] {
 }
 
 /**
- * The local image's Gateway tables: each deployed Gateway's URL for the agent, and the same Gateway
- * route as on AgentCore Runtime. Locally `box-runtime` holds the developer's AWS credentials, which
+ * The local image's Gateway tables: each deployed Gateway's URL for the agent, and a route to
+ * exactly those Gateways' hosts. Locally `box-runtime` holds the developer's AWS credentials, which
  * entrypoint.sh writes from the ones `agentcore dev` passes in, so Box signs as the developer.
  */
 export function localGatewayTables(gateways: LocalGateway[]): Table {
-  const regions = [...new Set(gateways.map((gateway) => gateway.region))];
-  for (const region of regions) checkRegion(region);
+  for (const { region } of gateways) checkRegion(region);
   const env: Table = {};
   for (const { envName, url } of gateways) {
     if (
@@ -266,7 +265,9 @@ export function localGatewayTables(gateways: LocalGateway[]): Table {
     agent: { env },
     egress: {
       "agentcore-gateway": {
-        destinations: regions.map((region) => `*.gateway.bedrock-agentcore.${region}.amazonaws.com`),
+        // Each Gateway's own host, not a wildcard: locally Box signs as the developer, who may
+        // reach other Gateways in the account.
+        destinations: [...new Set(gateways.map((gateway) => new URL(gateway.url).host))],
         secret: { ref: "aws://box-runtime" },
       },
     },
