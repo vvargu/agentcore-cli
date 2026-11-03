@@ -92,6 +92,10 @@ describe("BoxDevRunner", () => {
     expect(staged).toBe(0);
     expect(container.inputs[0]!.runtime.buildContextPath as string).toBe(".");
     expect(container.inputs[0]!.runtime.dockerfile as string).toBe("app/agent/Dockerfile");
+    // dev builds the image with the local profile; the Dockerfile's default is deploy's.
+    expect(container.inputs[0]!.runtime.customDockerBuildArgs).toEqual({
+      BOX_PROFILE: "box-container",
+    });
   });
 
   test("runs the staged box image with the profile's secrets", async () => {

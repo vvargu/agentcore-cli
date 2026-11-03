@@ -245,6 +245,24 @@ describe("stageBoxContainer", () => {
     );
   });
 
+  test("refuses a box Dockerfile from an older create, and names the lines to add", async () => {
+    const root = boxProject();
+    const runtime = { name: "agent", codeLocation: "app/agent" };
+    const current = await boxDockerfile("app/agent", "agent");
+    expect(current).toContain("ARG BOX_PROFILE=box-container-aws");
+    expect(current).toContain("COPY .box-build/agent/${BOX_PROFILE}/ /app/.box/profile/");
+    const old = current
+      .replace("ARG BOX_PROFILE=box-container-aws\n", "")
+      .replace("${BOX_PROFILE}", "box-container")
+      .replace("COPY .box-build/agent/scripts/ /opt/agentcore/\n", "");
+    writeFileSync(join(root, "app", "agent", "Dockerfile"), old);
+    const staging = stageBoxContainer({ projectRoot: root, runtime, env: boxyEnv() });
+    await expect(staging).rejects.toThrow("ARG BOX_PROFILE=box-container-aws");
+    await expect(
+      stageBoxContainer({ projectRoot: root, runtime, env: boxyEnv() }),
+    ).rejects.toThrow("COPY .box-build/agent/scripts/ /opt/agentcore/");
+  });
+
   test("refuses to replace a .dockerignore the user wrote", async () => {
     const root = boxProject();
     writeFileSync(join(root, ".dockerignore"), "node_modules\n");
@@ -276,8 +294,11 @@ describe("stageBoxContainer", () => {
       target: { kind: "aws", region: "eu-west-1" },
       env,
     });
-    const profile = toml(readFileSync(join(staged, "box-container", "profile.toml"), "utf8"));
+    const profile = toml(readFileSync(join(staged, "box-container-aws", "profile.toml"), "utf8"));
     expect(profile.egress.bedrock.secret.ref).toBe("aws://box-runtime");
+    // Deploy writes only its own folder: the local profile is as dev left it.
+    expect(readFileSync(join(staged, "box-container", "profile.toml"), "utf8")).toBe(localProfile);
+    expect(existsSync(join(staged, "box-container-aws", "policy.dw"))).toBe(true);
     expect(profile.egress["agentcore-gateway"].destinations).toEqual([
       "*.gateway.bedrock-agentcore.eu-west-1.amazonaws.com",
     ]);
