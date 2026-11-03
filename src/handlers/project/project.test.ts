@@ -398,12 +398,16 @@ describe("project create", () => {
 
     const projectRoot = join(directory, "MyProject");
     const profile = await readFile(join(projectRoot, "box", "profile.toml"), "utf-8");
-    expect(profile).toContain('packs = ["boxy/python", "boxy/bedrock"]');
+    expect(profile).toContain('packs = ["boxy/python", "boxy/bedrock", "boxy/agentcore"]');
+    expect(profile).toContain(
+      'command = ["${{ inputs.python.program }}", "${{ inputs.python.script }}"]',
+    );
     expect(profile).toContain('[options]\nbedrock.region = "us-west-2"');
     expect(profile).toContain('# secret.ref = "env://EXAMPLE_API_KEY"');
     expect(profile).toContain('# command = ["/usr/bin/curl"]');
-    // The packs' default command fits main.py's app.run(); ingress comes from later layers.
-    expect(profile).not.toMatch(/^\[agent/m);
+    // The profile holds the command; ingress comes from the container's own pack.
+    expect(profile).toContain("[agent]\ncommand = ");
+    expect(profile).not.toMatch(/^\[agent\.ingress/m);
     // The user's own rules example lives in profile.toml; no policy.dw until the user writes one.
     expect(profile).toContain('#   @id("spawn_curl") permit');
     expect(profile).not.toContain("metadata_");
