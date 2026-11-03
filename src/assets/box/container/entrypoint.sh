@@ -91,21 +91,28 @@ fi
 # --- Step 2b: the runtime's settings for the agent ------------------------------------------------
 # The agent sees only [agent.env], not the container's environment. Pass on the variables that name
 # the project's Gateways and Memories (AGENTCORE_GATEWAY_<NAME>_URL/_ARN/_AUTH_TYPE,
-# MEMORY_<NAME>_ID/_ARN, and the imported GATEWAY_<ID>_* forms) in the pack agentcore-runtime,
-# which the container profile lists. This is an allowlist of exact name shapes, not a prefix match:
-# the container's environment also holds secrets (AGENTCORE_CREDENTIAL_<NAME> from .env.local in
-# `agentcore dev`, the env:// secrets boxy reads), and none of them may reach the agent. A value
-# must be printable ASCII without spaces (a URL, an ARN, an id), so it is a safe TOML string.
-python3 - /app/.box/profile/packs/agentcore-runtime/pack.toml <<'PY'
-import json, os, re, sys
+# MEMORY_<NAME>_ID/_ARN, and the imported GATEWAY_<ID>_* forms) by appending them to [agent.env],
+# which agentcore writes as the last table of the container profile. This is an allowlist of exact
+# name shapes, not a prefix match: the container's environment also holds secrets
+# (AGENTCORE_CREDENTIAL_<NAME> from .env.local in `agentcore dev`, the env:// secrets boxy reads),
+# and none of them may reach the agent. A value must be printable ASCII without spaces (a URL, an
+# ARN, an id), so it is a safe TOML string. A name the profile already sets keeps its value.
+python3 - /app/.box/profile/profile.toml <<'PY'
+import json, os, re, sys, tomllib
 NAME = re.compile(r"(AGENTCORE_GATEWAY|AGENTCORE_MEMORY|GATEWAY|MEMORY)_[A-Z0-9_]+_(URL|ARN|ID|AUTH_TYPE)")
 VALUE = re.compile(r"[\x21-\x7e]*")
-names = sorted(k for k, v in os.environ.items() if NAME.fullmatch(k) and VALUE.fullmatch(v))
-lines = ['[pack]', 'name = "agentcore-runtime"', 'version = 1', '', '[agent.env]']
-lines += ["%s = %s" % (k, json.dumps(os.environ[k])) for k in names]
-os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
-with open(sys.argv[1], "w") as f:
-    f.write("\n".join(lines) + "\n")
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    text = f.read()
+headers = re.findall(r"^\s*\[[^\]]+\]", text, re.M)
+if not headers or headers[-1].strip() != "[agent.env]":
+    sys.exit("entrypoint: the container profile does not end with [agent.env]; passed nothing")
+have = set(tomllib.loads(text).get("agent", {}).get("env", {}))
+names = sorted(k for k, v in os.environ.items()
+               if NAME.fullmatch(k) and VALUE.fullmatch(v) and k not in have)
+with open(path, "a", encoding="utf-8") as f:
+    for k in names:
+        f.write("%s = %s\n" % (k, json.dumps(os.environ[k])))
 print("entrypoint: passed to the agent: %s" % (", ".join(names) or "nothing"))
 PY
 

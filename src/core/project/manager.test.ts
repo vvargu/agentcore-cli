@@ -3201,7 +3201,7 @@ describe("docs-only runtimes", () => {
         join(project.rootPath, ".box-build", "search", "box-container", "profile.toml"),
         "utf-8",
       );
-      expect(profile).toContain('secret.ref = "aws://box-runtime"');
+      expect(profile).toMatch(/\[egress\.bedrock\.secret\]\nref = "aws:\/\/box-runtime"/);
       expect(profile).toContain('"*.gateway.bedrock-agentcore.us-west-2.amazonaws.com"');
     } finally {
       process.env.AGENTCORE_BOXY_BIN = saved[0];
